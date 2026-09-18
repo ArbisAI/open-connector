@@ -26,6 +26,8 @@ import type { PoolClient } from "pg";
 import { Pool } from "pg";
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
+// Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+import { UserConnectionStore } from "../user-api/user-connection-store.ts";
 import { ConnectionRequestStore } from "./connection-request-store.ts";
 import { assertPostgresSchemaReady } from "./postgres-migrations.ts";
 import {
@@ -58,6 +60,7 @@ export class PostgresRuntimeDatabase implements RuntimeDatabase {
   readonly runLogStore: IRunLogStore;
   readonly idempotencyStore: IIdempotencyStore;
   readonly marketplaceStore: IMarketplaceStore;
+  readonly userConnectionStore: UserConnectionStore;
 
   private readonly pool: Pool;
   private readonly secretCodec: ISecretCodec;
@@ -94,6 +97,24 @@ export class PostgresRuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new PostgresRunLogStore(pool, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new PostgresIdempotencyStore(pool, this.secretCodec);
     this.marketplaceStore = new PostgresMarketplaceStore(pool);
+    // Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+    this.userConnectionStore = new UserConnectionStore((statements) =>
+      runInTransaction(pool, async (client) => {
+        const results: Record<string, unknown>[][] = [];
+        for (const { sql, values } of statements) {
+          let index = 0;
+          results.push(
+            (
+              await client.query(
+                sql.replaceAll("?", () => `$${++index}`),
+                values,
+              )
+            ).rows,
+          );
+        }
+        return results;
+      }),
+    );
   }
 
   static async open(

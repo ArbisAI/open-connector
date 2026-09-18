@@ -24,6 +24,8 @@ import type { IRuntimeTokenStore, RuntimeTokenRecord } from "./runtime-token-ser
 
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
+// Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+import { UserConnectionStore } from "../user-api/user-connection-store.ts";
 import { ConnectionRequestStore } from "./connection-request-store.ts";
 import {
   listRunLogs,
@@ -53,6 +55,7 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
   readonly runLogStore: D1RunLogStore;
   readonly idempotencyStore: D1IdempotencyStore;
   readonly marketplaceStore: IMarketplaceStore;
+  readonly userConnectionStore: UserConnectionStore;
 
   constructor(database: D1DatabaseBinding, options: D1RuntimeDatabaseOptions = {}) {
     const secretCodec = options.secretCodec ?? new PlainTextSecretCodec();
@@ -68,6 +71,11 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new D1RunLogStore(database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new D1IdempotencyStore(database, secretCodec);
     this.marketplaceStore = new D1MarketplaceStore(database);
+    // Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+    this.userConnectionStore = new UserConnectionStore(async (statements) => {
+      const results = await database.batch(statements.map(({ sql, values }) => database.prepare(sql).bind(...values)));
+      return results.map((result) => result.results ?? []);
+    });
   }
 }
 
