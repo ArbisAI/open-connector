@@ -96,6 +96,8 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
       }),
       actions,
       idempotency: options.runtimeDatabase.idempotencyStore,
+      // Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+      userConnectionStore: options.runtimeDatabase.userConnectionStore,
       transitFiles: options.transitFiles,
       uploadTransitFile: options.uploadTransitFile,
       runtimeTokens,
