@@ -3905,6 +3905,7 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
     uploadTransitFile: options.uploadTransitFile,
     runtimeTokens,
     runtimePolicyStore: options.runtimePolicyStore ?? new MemoryRuntimePolicyStore(),
+    userConnectionStore: requestDatabase.userConnectionStore,
     registerStaticRoutes: staticRoot ? (app) => registerStaticRoutes(app, { root: staticRoot }) : undefined,
     auth: {
       ...options.auth,
