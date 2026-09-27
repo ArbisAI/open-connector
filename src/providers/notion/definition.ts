@@ -1,7 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { notionActions } from "./actions.ts";
-import { notionReadScopes, notionWriteScopes } from "./scopes.ts";
+import { notionInsertCommentScopes, notionReadCommentScopes, notionReadScopes, notionWriteScopes } from "./scopes.ts";
 
 const service = "notion";
 
@@ -21,7 +21,7 @@ export const provider: ProviderDefinition = {
       type: "oauth2",
       authorizationUrl: "https://api.notion.com/v1/oauth/authorize",
       tokenUrl: "https://api.notion.com/v1/oauth/token",
-      scopes: [...notionReadScopes, ...notionWriteScopes],
+      scopes: [...notionReadScopes, ...notionWriteScopes, ...notionReadCommentScopes, ...notionInsertCommentScopes],
       tokenEndpointAuthMethod: "client_secret_basic",
       tokenRequestFormat: "json",
       authorizationParams: {

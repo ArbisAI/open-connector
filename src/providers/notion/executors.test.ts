@@ -1,6 +1,10 @@
 import type { ExecutionContext, ResolvedCredential } from "../../core/types.ts";
 
+import { Validator } from "@cfworker/json-schema";
 import { describe, expect, it, vi } from "vitest";
+import { validateActionInput } from "../../core/validation.ts";
+import { notionActions } from "./actions.ts";
+import { provider } from "./definition.ts";
 import { credentialValidators, executors } from "./executors.ts";
 
 type OAuthCredential = Extract<ResolvedCredential, { authType: "oauth2" }>;
@@ -336,5 +340,216 @@ describe("notion oauth2 credential validation", () => {
       jsonResponse({ object: "error", code: "unauthorized", message: "API token is invalid." }, 401),
     );
     await expect(credentialValidators.oauth2!(grant(userGrant()), { fetcher })).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe("notion comments", () => {
+  const PAGE = "7b2e4c1a-9d3f-4e5b-8a6c-1f2d3e4b5a60";
+  const DISCUSSION = "0c8f2d61-4b7e-4a3b-9d15-6e2f8a1b3d5e";
+
+  function notionApi(answer: (url: string, init?: RequestInit) => Response) {
+    const calls: { url: string; init: RequestInit | undefined }[] = [];
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      return answer(url, init);
+    });
+    return { fetcher, calls };
+  }
+
+  async function run(
+    action: "notion.list_comments" | "notion.create_comment",
+    input: Record<string, unknown>,
+    answer: (url: string, init?: RequestInit) => Response,
+  ) {
+    const { fetcher, calls } = notionApi(answer);
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const result = await executors[action]!(input, contextFor(grant(userGrant())));
+      return { result, calls };
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  }
+
+  it("lists comments with GET /v1/comments?block_id and forwards Notion's list body verbatim", async () => {
+    const body = {
+      object: "list",
+      results: [
+        {
+          object: "comment",
+          id: "c-1",
+          parent: { type: "page_id", page_id: PAGE },
+          discussion_id: DISCUSSION,
+          created_time: "2026-09-01T10:00:00.000Z",
+          last_edited_time: "2026-09-01T10:00:00.000Z",
+          created_by: { object: "user", id: ALICE },
+          rich_text: [{ type: "text", text: { content: "Hi" }, plain_text: "Hi" }],
+        },
+      ],
+      next_cursor: null,
+      has_more: false,
+      type: "comment",
+      comment: {},
+      request_id: "req-1",
+    };
+    const { result, calls } = await run("notion.list_comments", { blockId: PAGE }, () => jsonResponse(body));
+    // Raw passthrough: every key Notion sent, `request_id` included, and nothing renamed.
+    expect(result).toEqual({ ok: true, output: body });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(`https://api.notion.com/v1/comments?block_id=${PAGE}`);
+    expect(calls[0]!.init?.method).toBe("GET");
+    expect(calls[0]!.init?.body).toBeUndefined();
+    const headers = new Headers(calls[0]!.init?.headers);
+    expect(headers.get("authorization")).toBe("Bearer ntn_live");
+    expect(headers.get("notion-version")).toBe("2026-03-11");
+    expect(headers.has("content-type")).toBe(false);
+  });
+
+  it("pages with Notion's cursor: page_size and start_cursor ride the query string", async () => {
+    const first = { object: "list", results: [{ object: "comment", id: "c-1" }], next_cursor: "cur-2", has_more: true };
+    const second = { object: "list", results: [{ object: "comment", id: "c-2" }], next_cursor: null, has_more: false };
+    const { fetcher, calls } = notionApi((url) => jsonResponse(url.includes("start_cursor=cur-2") ? second : first));
+    vi.stubGlobal("fetch", fetcher);
+    try {
+      const page1 = await executors["notion.list_comments"]!(
+        { blockId: PAGE, pageSize: 1 },
+        contextFor(grant(userGrant())),
+      );
+      expect(page1).toEqual({ ok: true, output: first });
+      const cursor = (page1 as { output: { next_cursor: string } }).output.next_cursor;
+      const page2 = await executors["notion.list_comments"]!(
+        { blockId: PAGE, pageSize: 1, startCursor: cursor },
+        contextFor(grant(userGrant())),
+      );
+      expect(page2).toEqual({ ok: true, output: second });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(calls.map((c) => c.url)).toEqual([
+      `https://api.notion.com/v1/comments?block_id=${PAGE}&page_size=1`,
+      `https://api.notion.com/v1/comments?block_id=${PAGE}&page_size=1&start_cursor=cur-2`,
+    ]);
+  });
+
+  it("creates a comment on a page with POST /v1/comments {parent, rich_text} and forwards the comment verbatim", async () => {
+    const richText = [{ type: "text", text: { content: "Looks good" } }];
+    const created = {
+      object: "comment",
+      id: "c-9",
+      parent: { type: "page_id", page_id: PAGE },
+      discussion_id: DISCUSSION,
+      created_time: "2026-09-02T08:00:00.000Z",
+      last_edited_time: "2026-09-02T08:00:00.000Z",
+      created_by: { object: "user", id: BOT },
+      rich_text: richText,
+      request_id: "req-2",
+    };
+    const { result, calls } = await run(
+      "notion.create_comment",
+      { parent: { page_id: PAGE }, rich_text: richText },
+      () => jsonResponse(created),
+    );
+    expect(result).toEqual({ ok: true, output: created });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://api.notion.com/v1/comments");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(new Headers(calls[0]!.init?.headers).get("content-type")).toBe("application/json");
+    // The body is exactly what Notion documents: no undefined keys, no
+    // discussion_id beside a parent.
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({ parent: { page_id: PAGE }, rich_text: richText });
+  });
+
+  it("replies in a discussion with discussion_id and forwards attachments and display_name when given", async () => {
+    const { calls } = await run(
+      "notion.create_comment",
+      {
+        discussion_id: DISCUSSION,
+        rich_text: [{ type: "text", text: { content: "Reply" } }],
+        attachments: [{ file_upload_id: "fu-1", type: "file_upload" }],
+        display_name: { type: "custom", custom: { name: "Review bot" } },
+      },
+      () => jsonResponse({ object: "comment", id: "c-10" }),
+    );
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
+      discussion_id: DISCUSSION,
+      rich_text: [{ type: "text", text: { content: "Reply" } }],
+      attachments: [{ file_upload_id: "fu-1", type: "file_upload" }],
+      display_name: { type: "custom", custom: { name: "Review bot" } },
+    });
+  });
+
+  it("refuses a comment that names neither or both of parent and discussion_id before any request", async () => {
+    for (const input of [{ rich_text: [] }, { parent: { page_id: PAGE }, discussion_id: DISCUSSION, rich_text: [] }]) {
+      const { result, calls } = await run("notion.create_comment", input, () => jsonResponse({}));
+      expect(result).toMatchObject({
+        ok: false,
+        error: { details: { status: 400 }, message: expect.stringContaining("discussion_id") },
+      });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("publishes an input schema that takes exactly one target and Notion's attachment and display name shapes", () => {
+    const action = notionActions.find((candidate) => candidate.name === "create_comment")!;
+    const richText = [{ type: "text", text: { content: "Hi" } }];
+    const valid = (input: Record<string, unknown>) => validateActionInput(action, input).valid;
+
+    expect(valid({ parent: { page_id: PAGE }, rich_text: richText })).toBe(true);
+    expect(valid({ parent: { type: "block_id", block_id: PAGE }, rich_text: richText })).toBe(true);
+    expect(valid({ discussion_id: DISCUSSION, rich_text: richText })).toBe(true);
+    expect(valid({ rich_text: richText })).toBe(false);
+    expect(valid({ parent: { page_id: PAGE }, discussion_id: DISCUSSION, rich_text: richText })).toBe(false);
+    expect(valid({ parent: { page_id: PAGE, block_id: PAGE }, rich_text: richText })).toBe(false);
+    expect(valid({ parent: { database_id: PAGE }, rich_text: richText })).toBe(false);
+
+    const attachment = { file_upload_id: "fu-1", type: "file_upload" };
+    expect(
+      valid({ discussion_id: DISCUSSION, rich_text: richText, attachments: [attachment, attachment, attachment] }),
+    ).toBe(true);
+    expect(
+      valid({
+        discussion_id: DISCUSSION,
+        rich_text: richText,
+        attachments: [attachment, attachment, attachment, attachment],
+      }),
+    ).toBe(false);
+    expect(valid({ discussion_id: DISCUSSION, rich_text: richText, display_name: { type: "integration" } })).toBe(true);
+    expect(
+      valid({
+        discussion_id: DISCUSSION,
+        rich_text: richText,
+        display_name: { type: "custom", custom: { name: "Bot" } },
+      }),
+    ).toBe(true);
+    expect(valid({ discussion_id: DISCUSSION, rich_text: richText, display_name: { type: "robot" } })).toBe(false);
+    expect(valid({ discussion_id: DISCUSSION, rich_text: richText, display_name: { type: "custom" } })).toBe(false);
+  });
+
+  it("declares the comment capabilities and accepts the partial comment Notion returns without read access", () => {
+    const list = notionActions.find((candidate) => candidate.name === "list_comments")!;
+    const create = notionActions.find((candidate) => candidate.name === "create_comment")!;
+    expect(list.requiredScopes).toEqual(["read_comments"]);
+    expect(create.requiredScopes).toEqual(["insert_comments"]);
+    // The OAuth scope list doubles as the capability checklist the setup UI shows, so it must cover every action.
+    const oauth = provider.auth.find((auth) => auth.type === "oauth2");
+    const declared = new Set(oauth?.type === "oauth2" ? oauth.scopes : []);
+    expect(
+      notionActions.flatMap((candidate) => candidate.requiredScopes.filter((scope) => !declared.has(scope))),
+    ).toEqual([]);
+    expect(new Validator(create.outputSchema).validate({ object: "comment", id: "c-11" }).valid).toBe(true);
+  });
+
+  it("passes Notion's refusal through with its status and message", async () => {
+    const { result } = await run("notion.list_comments", { blockId: PAGE }, () =>
+      jsonResponse(
+        { object: "error", code: "restricted_resource", message: "Insufficient permissions for this endpoint." },
+        403,
+      ),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { details: { status: 403 }, message: "Insufficient permissions for this endpoint." },
+    });
   });
 });
