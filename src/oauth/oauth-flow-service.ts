@@ -51,6 +51,12 @@ export interface OAuthAuthorizationState {
   createdAt: string;
   pkceCodeVerifier?: string;
   authorizationScopes?: string[];
+  /**
+   * `redirect_uri` the authorization request carried. The code exchange must
+   * repeat it (RFC 6749 §4.1.3) even when the client config changes while the
+   * browser is at the provider. Absent on states created before it was recorded.
+   */
+  redirectUri?: string;
   clientConfig?: OAuthClientConfig;
 }
 
@@ -205,6 +211,7 @@ export class OAuthFlowService {
       input.authorizationOptionIds,
       this.clientConfigs.getEffectiveScopes(service, config),
     );
+    const redirectUri = this.clientConfigs.expectedRedirectUri(service, config);
     const pending: OAuthAuthorizationState = {
       service,
       connectionName,
@@ -212,6 +219,7 @@ export class OAuthFlowService {
       createdAt: now.toISOString(),
       pkceCodeVerifier,
       authorizationScopes: auth.authorizationOptions ? authorizationScopes : undefined,
+      redirectUri,
       clientConfig: input.clientConfig ? config : undefined,
     };
 
@@ -220,12 +228,7 @@ export class OAuthFlowService {
       authorizationUrl.searchParams.set(key, value);
     }
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.clientId, "client_id", config.clientId);
-    setAuthorizationParam(
-      authorizationUrl,
-      auth.authorizationRequestFields?.redirectUri,
-      "redirect_uri",
-      this.clientConfigs.expectedRedirectUri(service),
-    );
+    setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.redirectUri, "redirect_uri", redirectUri);
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.responseType, "response_type", "code");
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.state, "state", state);
     if (authorizationScopes.length > 0 && auth.authorizationRequestFields?.scope !== false) {
@@ -272,7 +275,7 @@ export class OAuthFlowService {
         );
       }
 
-      const redirectUri = this.clientConfigs.expectedRedirectUri(pending.service);
+      const redirectUri = pending.redirectUri ?? this.clientConfigs.expectedRedirectUri(pending.service, config);
       const tokenUrl = this.clientConfigs.resolveEndpointUrl(pending.service, auth.tokenUrl, config);
       const createError = (message: string): OAuthFlowError =>
         new OAuthFlowError("oauth_token_exchange_failed", message);

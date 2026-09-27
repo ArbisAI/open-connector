@@ -174,6 +174,24 @@ unknown scopes instead of silently expanding authorization. Omit `requestedScope
 provider defaults; when present, the array must contain at least one scope. Config summaries expose
 both `requestedScopes` and the resulting `effectiveScopes`.
 
+A provider whose OAuth app is registered with a different redirect URI, for example a native app's
+custom scheme, can save it as `redirectUri` with the client configuration:
+
+```bash
+curl -s -X PUT http://localhost:3000/api/oauth/configs/example \
+  -H 'content-type: application/json' \
+  -d '{"clientId":"...","clientSecret":"...","redirectUri":"myapp://oauth/callback"}'
+```
+
+The value must be an absolute URI without user info or a fragment, and it is sent exactly as saved.
+Custom schemes are accepted; `javascript:`, `vbscript:`, `data:`, `file:`, `blob:`, and `about:` are
+rejected. The authorization request and the code exchange both send it, and `expectedRedirectUri`
+reports it so you can register that value with the provider. Omit it or send an empty string to use
+the runtime callback again; each `PUT` replaces the whole configuration, so include `redirectUri`
+whenever you save the configuration. The runtime's `/oauth/callback` route is unchanged: the app that
+owns the redirect forwards the provider's callback query (`code` and `state`, or `error`) to it.
+Other providers keep the runtime callback.
+
 Some providers declare additional OAuth client fields in `auth[].clientConfigFields`; send those as
 `extra`.
 

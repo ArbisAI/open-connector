@@ -92,6 +92,10 @@ const oauthClientConfigRequestSchema = jsonSchema.object(
       minItems: 1,
       description: "Non-empty provider-declared scope subset to request. Omit to use every provider default.",
     }),
+    redirectUri: jsonSchema.string({
+      description:
+        "Absolute redirect URI registered with the provider instead of the runtime callback, such as a native app's custom scheme. Must not carry user info or a fragment; javascript, vbscript, data, file, blob, and about schemes are rejected. Omit or send an empty string to use the runtime callback.",
+    }),
     extra: {
       type: "object",
       additionalProperties: { type: "string" },
@@ -584,8 +588,14 @@ export function createOpenApiDocument(
             }),
             clientId: jsonSchema.nullable(jsonSchema.string({ description: "Configured OAuth client id." })),
             expectedRedirectUri: jsonSchema.string({
-              description: "Callback URL to configure in the provider OAuth app.",
+              description:
+                "Callback URL to configure in the provider OAuth app: the configured override, else the runtime callback.",
             }),
+            redirectUri: jsonSchema.nullable(
+              jsonSchema.string({
+                description: "Configured redirect URI override, or null when the runtime callback is used.",
+              }),
+            ),
             auth: jsonSchema.unknownObject("Provider OAuth capability metadata."),
             requestedScopes: jsonSchema.nullable(
               jsonSchema.array(jsonSchema.string(), {
@@ -603,6 +613,7 @@ export function createOpenApiDocument(
               "customClientAvailable",
               "clientId",
               "expectedRedirectUri",
+              "redirectUri",
               "auth",
               "requestedScopes",
               "effectiveScopes",
@@ -1312,6 +1323,10 @@ function createOAuthAuthorizationPath(): Record<string, unknown> {
                   minItems: 1,
                   description: "Optional non-empty provider-declared scope subset to request.",
                 }),
+                redirectUri: jsonSchema.string({
+                  description:
+                    "Optional redirect URI registered with the connection-scoped OAuth app instead of the runtime callback. Same rules as OAuthClientConfigRequest.redirectUri.",
+                }),
                 authorizationOptionIds: jsonSchema.array(jsonSchema.string(), {
                   description: "Optional provider authorization option ids selected for this connection.",
                 }),
@@ -1643,7 +1658,9 @@ function connectionManagementPaths(): Record<string, unknown> {
       jsonSchema.object("OAuth client configuration state; present when the provider supports OAuth.", {
         configured: jsonSchema.boolean(),
         customClientAvailable: jsonSchema.boolean("Whether connections may carry their own OAuth client."),
-        expectedRedirectUri: jsonSchema.string("Callback URL to register with the provider."),
+        expectedRedirectUri: jsonSchema.string(
+          "Callback URL to register with the provider: the configured override, else the runtime callback.",
+        ),
         missingFields: jsonSchema.stringArray("Required client inputs absent from the stored configuration."),
       }),
     ),

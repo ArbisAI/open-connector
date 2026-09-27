@@ -380,6 +380,7 @@ export interface RuntimeProviderSetup {
 interface RuntimeOAuthClientSetup {
   configured: boolean;
   customClientAvailable: boolean;
+  /** Redirect URI to register with the provider: the configured override, else the runtime callback. */
   expectedRedirectUri: string;
   missingFields: string[];
 }
