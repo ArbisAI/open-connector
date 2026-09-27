@@ -58,6 +58,8 @@ export const granolaMcpActionHandlers: ProviderActionHandlers<
         title: meeting.title,
         summary_markdown: meeting.summary,
         transcript: input.include === "transcript" ? [{ text: await getGranolaTranscript(context, id) }] : undefined,
+        date: meeting.date,
+        participants: meeting.attendees || undefined,
       },
     };
   },

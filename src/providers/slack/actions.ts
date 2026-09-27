@@ -143,6 +143,22 @@ const conversationSchema = s.object(
     purpose: s.nullable(s.string({ description: "The conversation purpose." })),
     userId: s.string({ description: "The linked user identifier for IM conversations." }),
     locale: s.string({ description: "The locale returned by Slack when requested." }),
+    created: s.integer({ description: "Creation time as a Unix timestamp in seconds when Slack provides it." }),
+    updated: s.integer({
+      description:
+        "Last settings update time, passed through as Slack returns it. Slack documents epoch milliseconds for channels (unlike created) and a Unix timestamp for legacy IM and MPIM objects.",
+    }),
+    creatorId: s.string({ description: "The user who created the conversation when Slack provides it." }),
+    isShared: s.boolean({ description: "Whether the conversation is shared with another workspace." }),
+    isExtShared: s.boolean({ description: "Whether the conversation is shared with an external organization." }),
+    isOrgShared: s.boolean({
+      description: "Whether the conversation is shared between workspaces of the same Enterprise organization.",
+    }),
+    contextTeamId: s.string({
+      description: "The ID of the workspace the conversation is within when Slack provides it.",
+    }),
+    lastRead: s.string({ description: "The last-read message timestamp when Slack provides it." }),
+    unreadCount: s.integer({ description: "The unread message count when Slack provides it." }),
   },
   {
     required: ["channelId", "name", "type", "isArchived", "isPrivate", "isMember", "topic", "purpose"],
@@ -161,6 +177,18 @@ const userSchema = s.object(
     isAdmin: s.nullable(s.boolean({ description: "Whether the user is an admin." })),
     isOwner: s.nullable(s.boolean({ description: "Whether the user is an owner." })),
     locale: s.string({ description: "The locale returned by Slack when requested." }),
+    email: s.string({
+      description: "The profile email. Slack returns it only when the token holds the users:read.email scope.",
+    }),
+    tz: s.string({ description: "The user's time zone identifier when Slack provides it." }),
+    tzOffset: s.integer({ description: "The user's UTC offset in seconds when Slack provides it." }),
+    updated: s.integer({ description: "When the user object was last updated, as a Unix timestamp in seconds." }),
+    teamId: s.string({ description: "The user's team ID when Slack provides it." }),
+    isRestricted: s.boolean({
+      description: "Whether the user is a guest. Single-channel guests also set isUltraRestricted.",
+    }),
+    isUltraRestricted: s.boolean({ description: "Whether the user is a single-channel guest." }),
+    isAppUser: s.boolean({ description: "Whether the user is an authorized user of the calling app." }),
   },
   {
     required: ["userId", "username", "realName", "displayName", "isBot", "isDeleted", "isAdmin", "isOwner"],
