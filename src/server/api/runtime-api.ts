@@ -245,9 +245,28 @@ export function parseRuntimeActionHttpResult(value: unknown): RuntimeActionHttpR
   throw invalid("status and body envelope do not match");
 }
 
-/** Write a newly serialized or replayed action response. */
+/**
+ * Write a newly serialized or replayed action response; runtime failures,
+ * including proxy failures, go through here as well. A 429 whose provider
+ * details carry `retryAfterSeconds` also answers with the `Retry-After`
+ * header, so HTTP callers pace on the provider's own hint; the body keeps it,
+ * which is what an idempotent replay re-emits the header from.
+ */
 export function writeRuntimeActionHttpResult(context: Context, result: RuntimeActionHttpResult): Response {
+  const retryAfterSeconds = readRuntimeRetryAfterSeconds(result);
+  if (retryAfterSeconds !== undefined) {
+    context.header("Retry-After", String(retryAfterSeconds));
+  }
   return context.json(result.body, result.status);
+}
+
+function readRuntimeRetryAfterSeconds(result: RuntimeActionHttpResult): number | undefined {
+  if (result.status !== 429) {
+    return undefined;
+  }
+  const seconds = optionalInteger(optionalRecord(optionalRecord(result.body.data)?.details)?.retryAfterSeconds);
+  // A safe integer is what keeps String() in plain delay-seconds digits: 1e21 would print as "1e+21".
+  return seconds !== undefined && Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
 export function mapConnectionErrorStatus(error: ConnectionError): 400 | 404 | 409 {

@@ -25,6 +25,7 @@ import {
   requiredInputString,
   requiredResponseRecord,
   runProviderRequest,
+  withRetryAfterSeconds,
 } from "../provider-runtime.ts";
 import { slackConversationTypes } from "./constants.ts";
 
@@ -927,7 +928,7 @@ async function slackFormRequestJson<T extends SlackPayloadError>(
 async function readSlackResponseJson<T extends SlackPayloadError>(response: Response): Promise<T> {
   const payload = (optionalRecord(await response.json().catch(() => undefined)) ?? {}) as T;
   if (!response.ok) {
-    throw slackHttpError(response.status, payload, response.headers.get("retry-after"));
+    throw slackHttpError(response, payload);
   }
   assertSlackPayload(payload);
   // Preserve HTTP/Slack failures (including Retry-After) above, but require
@@ -1414,17 +1415,11 @@ function formatSlackPayloadError(payload: SlackPayloadError): string {
   return `${error}: ${details.join("; ")}`;
 }
 
-function slackHttpError(status: number, payload: SlackPayloadError, retryAfter: string | null): ProviderRequestError {
-  const message = payload.error ? formatSlackPayloadError(payload) : `slack request failed with ${status}`;
-  if (status === 429 && retryAfter !== null && /^\d+$/.test(retryAfter)) {
-    const retryAfterSeconds = Number(retryAfter);
-    if (Number.isSafeInteger(retryAfterSeconds)) {
-      // The action envelope carries provider details; retain pacing so callers
-      // can resume the same page without guessing when this workspace may retry.
-      return new ProviderRequestError(status, message, { ...payload, retryAfterSeconds });
-    }
-  }
-  return new ProviderRequestError(status, message, payload);
+function slackHttpError(response: Response, payload: SlackPayloadError): ProviderRequestError {
+  const message = payload.error ? formatSlackPayloadError(payload) : `slack request failed with ${response.status}`;
+  // The action envelope carries provider details; retain pacing so callers
+  // can resume the same page without guessing when this workspace may retry.
+  return new ProviderRequestError(response.status, message, withRetryAfterSeconds(response, payload));
 }
 
 function slackResponseError(message: string): ProviderRequestError {
