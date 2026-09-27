@@ -485,8 +485,13 @@ describe("message normalization", () => {
               reply_users_count: 1,
               latest_reply: "1700000100.000000",
               is_locked: true,
+              reply_users: ["U1"],
               reactions: [{ name: "tada", count: 2, users: ["U1", "U2"] }],
               blocks: [{ type: "section" }],
+              attachments: [{ fallback: "release notes", color: "#36a64f" }],
+              files: [{ id: "F0G9QF9C6", name: "notes.txt", mimetype: "text/plain" }],
+              metadata: { event_type: "deploy", event_payload: { sha: "abc123" } },
+              is_starred: true,
             },
           ],
         }),
@@ -513,18 +518,158 @@ describe("message normalization", () => {
       clientMsgId: "3d1b0a3e-0000-4000-8000-000000000000",
       text: "shipped",
       editedTs: "1700000001.000000",
+      editedUserId: "U023BECGF",
       threadTs: "1700000000.123456",
       parentUserId: "U023BECGF",
       replyCount: 2,
       replyUsersCount: 1,
+      replyUserIds: ["U1"],
       latestReply: "1700000100.000000",
       isLocked: true,
       reactions: [{ name: "tada", count: 2, userIds: ["U1", "U2"] }],
     });
-    // Declared but unsent fields are omitted rather than emitted empty, so a
-    // reader can tell "Slack said nothing" from "Slack said nothing here".
-    expect(result.output.messages[0]).not.toHaveProperty("blocks");
+    // The nested payloads and undeclared Slack fields stay out of the default
+    // row; the untouched record only rides along with includeRaw.
+    for (const absent of ["files", "attachments", "blocks", "metadata", "raw", "isStarred", "is_starred"]) {
+      expect(result.output.messages[0]).not.toHaveProperty(absent);
+    }
   });
+
+  // A thread_broadcast reply as Slack returns it under include_all_metadata:
+  // `root` is Slack's copy of the thread parent, whose ts is already threadTs.
+  const rawMessage = {
+    type: "message",
+    subtype: "thread_broadcast",
+    ts: "1700000100.000200",
+    thread_ts: "1700000000.123456",
+    user: "U023BECGF",
+    text: "see attached",
+    edited: { user: "U0G9QF9C6", ts: "1700000101.000000" },
+    root: {
+      type: "message",
+      ts: "1700000000.123456",
+      thread_ts: "1700000000.123456",
+      user: "U0G9QF9C6",
+      text: "release checklist",
+      reply_count: 1,
+    },
+    files: [{ id: "F0G9QF9C6", name: "notes.txt" }],
+    blocks: [{ type: "section", text: { type: "mrkdwn", text: "see attached" } }],
+    metadata: { event_type: "task_added", event_payload: { id: "11223" } },
+    is_starred: true,
+  };
+  const messageRow = {
+    ts: "1700000100.000200",
+    type: "message",
+    subtype: "thread_broadcast",
+    userId: "U023BECGF",
+    text: "see attached",
+    editedTs: "1700000101.000000",
+    editedUserId: "U0G9QF9C6",
+    threadTs: "1700000000.123456",
+  };
+  const rawMatch = {
+    iid: "9e4d2d5c-0000-4000-8000-000000000000",
+    channel: { id: "C024BE91L", name: "general", is_private: false },
+    ts: "1700000000.123456",
+    user: "U023BECGF",
+    username: "alice",
+    text: "see attached",
+    permalink: "https://example.slack.com/archives/C024BE91L/p1700000000123456",
+    team: "T024BE7LD",
+    type: "message",
+    score: 0.98,
+    files: [{ id: "F0G9QF9C6", name: "notes.txt" }],
+    attachments: [{ fallback: "release notes" }],
+    blocks: [{ type: "section", text: { type: "mrkdwn", text: "see attached" } }],
+  };
+  const matchRow = {
+    matchId: "9e4d2d5c-0000-4000-8000-000000000000",
+    channelId: "C024BE91L",
+    channelName: "general",
+    ts: "1700000000.123456",
+    userId: "U023BECGF",
+    username: "alice",
+    text: "see attached",
+    permalink: "https://example.slack.com/archives/C024BE91L/p1700000000123456",
+    teamId: "T024BE7LD",
+    type: "message",
+  };
+
+  it.each([
+    {
+      actionId: "slack.get_channel_messages",
+      input: { channelId: "C024BE91L" },
+      payload: { ok: true, has_more: false, messages: [rawMessage] },
+      list: "messages",
+      record: rawMessage,
+      row: messageRow,
+      requestsMetadata: true,
+    },
+    {
+      actionId: "slack.get_thread",
+      input: { channelId: "C024BE91L", threadTs: "1700000000.123456" },
+      payload: { ok: true, has_more: false, messages: [rawMessage] },
+      list: "messages",
+      record: rawMessage,
+      row: messageRow,
+      requestsMetadata: true,
+    },
+    {
+      actionId: "slack.search_messages",
+      input: { query: "attached" },
+      payload: { ok: true, query: "attached", messages: { matches: [rawMatch], total: 1 } },
+      list: "matches",
+      record: rawMatch,
+      row: matchRow,
+      requestsMetadata: false,
+    },
+  ] as const)(
+    "$actionId returns the untouched record under raw only when includeRaw is true",
+    async ({ actionId, input, payload, list, record, row, requestsMetadata }) => {
+      const action = slackActions.find((candidate) => candidate.id === actionId)!;
+      expect(validateActionInput(action, { ...input, includeRaw: true }).valid).toBe(true);
+      expect(validateActionInput(action, { ...input, includeRaw: "yes" }).valid).toBe(false);
+
+      const execute = slackExecutors[actionId]!;
+      const seen: URL[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (target: RequestInfo | URL) => {
+          seen.push(new URL(target.toString()));
+          return Response.json(payload);
+        }),
+      );
+      const context: ExecutionContext = {
+        getCredential: async () => apiKeyCredential("xoxb-bot-token"),
+      };
+
+      const withRaw = (await execute({ ...input, includeRaw: true }, context)) as {
+        ok: true;
+        output: Record<string, Array<Record<string, unknown>>>;
+      };
+      expect(withRaw.ok).toBe(true);
+      const { raw, ...normalized } = withRaw.output[list]![0]!;
+      // The whole vendor record, including the nested payloads the row leaves out.
+      expect(raw).toEqual(record);
+      // The opt-in adds raw and nothing else: no nested payload is lifted onto the row.
+      expect(normalized).toEqual(row);
+      expect(new Validator(action.outputSchema).validate(withRaw.output).valid).toBe(true);
+      // Slack sends message metadata only on request; search.messages has no such flag.
+      expect(seen[0]!.searchParams.get("include_all_metadata")).toBe(requestsMetadata ? "true" : null);
+
+      for (const plain of [input, { ...input, includeRaw: false }]) {
+        const before = seen.length;
+        const withoutRaw = (await execute(plain, context)) as {
+          ok: true;
+          output: Record<string, Array<Record<string, unknown>>>;
+        };
+        expect(withoutRaw.ok).toBe(true);
+        expect(withoutRaw.output[list]![0]).toEqual(row);
+        expect(seen[before]!.searchParams.has("include_all_metadata")).toBe(false);
+      }
+    },
+  );
 
   it("omits every optional field on a bare message", async () => {
     const execute = slackExecutors["slack.get_channel_messages"]!;
@@ -567,9 +712,12 @@ describe("message normalization", () => {
             ts: "1700000000.123456",
             userId: "U023BECGF",
             text: "hi",
+            editedUserId: "U0G9QF9C6",
             threadTs: "1700000000.123456",
             replyCount: 2,
+            replyUserIds: ["U1"],
             reactions: [{ name: "tada", count: 2, userIds: ["U1"] }],
+            raw: { ts: "1700000000.123456", user: "U023BECGF", text: "hi" },
           },
         ],
         hasMore: false,

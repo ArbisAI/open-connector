@@ -66,6 +66,21 @@ const messageContentProperties = {
   metadata: s.unknownObject("Slack message metadata to attach to the message."),
 };
 
+// Shared by `conversations.history` and `conversations.replies`: opt in to
+// the untouched vendor record. Off by default so the row read in bulk stays
+// lean. Opting in also asks Slack for message metadata, which it leaves out
+// unless the request sets `include_all_metadata`.
+const includeRawProperties = {
+  includeRaw: s.boolean({
+    description:
+      "When true, each returned message also carries the untouched Slack record under raw, including its blocks, attachments, files and message metadata. Defaults to false.",
+  }),
+};
+
+const rawMessageSchema = s.unknownObject(
+  "The untouched Slack record, exactly as the Slack API returned it. Present only when includeRaw is true.",
+);
+
 const slackReactionSchema = s.looseObject(
   {
     name: s.string({ description: "The emoji name of the reaction." }),
@@ -80,9 +95,10 @@ const slackReactionSchema = s.looseObject(
 // Only fields the executor actually normalizes are declared. The object is
 // loose, but that permits extras it does NOT make them appear: the executor
 // builds each row explicitly, so an undeclared Slack field is simply not
-// emitted. Deliberately absent: `blocks`, `attachments` and `files`. Those
-// are unbounded nested payloads on a row shape that ETL reads in bulk, and
-// each wants its own normalized contract rather than a raw passthrough.
+// emitted. Deliberately absent: `blocks`, `attachments`, `files` and
+// `metadata`. Those are unbounded nested payloads on a row shape that ETL
+// reads in bulk, so they stay out of the default row; a caller that needs
+// them passes includeRaw and reads them from `raw`, the untouched record.
 const slackMessageSchema = s.looseObject(
   {
     ts: s.string({ description: "The message timestamp identifier." }),
@@ -98,6 +114,7 @@ const slackMessageSchema = s.looseObject(
     clientMsgId: s.string({ description: "The client-generated message identifier when Slack returns one." }),
     text: s.string({ description: "The text content of the message." }),
     editedTs: s.string({ description: "The timestamp of the most recent edit, when the message was edited." }),
+    editedUserId: s.string({ description: "The user ID of the most recent editor, when the message was edited." }),
     threadTs: s.string({
       description:
         "The timestamp of the thread parent. Equal to ts on a thread parent, and absent on a message that is not in a thread.",
@@ -105,9 +122,14 @@ const slackMessageSchema = s.looseObject(
     parentUserId: s.string({ description: "The author of the thread parent, on a threaded reply." }),
     replyCount: s.integer({ description: "The number of replies to this thread parent." }),
     replyUsersCount: s.integer({ description: "The number of distinct users who replied to this thread parent." }),
+    replyUserIds: s.array(s.string({ description: "A Slack user ID." }), {
+      description:
+        "Up to five user IDs of people who replied to this thread parent. Slack caps this list; use replyUsersCount for the total.",
+    }),
     latestReply: s.string({ description: "The timestamp of the most recent reply to this thread parent." }),
     isLocked: s.boolean({ description: "Whether the thread is locked." }),
     reactions: s.array(slackReactionSchema, { description: "Reaction summaries attached to the message." }),
+    raw: rawMessageSchema,
   },
   { description: "A Slack message record." },
 );
@@ -124,6 +146,7 @@ const searchMessageMatchSchema = s.looseObject(
     permalink: s.string({ description: "A Slack permalink for the matching message." }),
     teamId: s.string({ description: "The Slack team ID returned for the match." }),
     type: s.string({ description: "The Slack result type." }),
+    raw: rawMessageSchema,
   },
   { description: "A normalized Slack message search match." },
 );
@@ -281,6 +304,7 @@ export const slackActions: ActionDefinition[] = [
           description: "The Slack pagination cursor from a previous page. Omit for the first page.",
         }),
         ...historyWindowProperties,
+        ...includeRawProperties,
       },
       { required: ["channelId"], description: "Input parameters for reading Slack conversation history." },
     ),
@@ -349,6 +373,10 @@ export const slackActions: ActionDefinition[] = [
         sort: searchSortSchema,
         sortDir: sortDirectionSchema,
         teamId: s.string({ description: "The encoded team ID to search when using an org-level token." }),
+        includeRaw: s.boolean({
+          description:
+            "When true, each returned match also carries the untouched Slack search match under raw, including any blocks, attachments and files. Defaults to false.",
+        }),
       },
       { required: ["query"], description: "Input parameters for searching Slack messages." },
     ),
@@ -450,6 +478,7 @@ export const slackActions: ActionDefinition[] = [
           description: "The Slack pagination cursor from a previous page. Omit for the first page.",
         }),
         ...historyWindowProperties,
+        ...includeRawProperties,
       },
       { required: ["channelId", "threadTs"], description: "Input parameters for reading a Slack thread." },
     ),
