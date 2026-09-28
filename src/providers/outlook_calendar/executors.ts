@@ -13,6 +13,7 @@ import {
 } from "../../core/cast.ts";
 import { compactJson, encodePathSegment } from "../../core/request.ts";
 import { microsoftGraphJson, microsoftGraphRequest } from "../outlook/microsoft-graph.ts";
+import { providerInputError } from "../provider-runtime.ts";
 import { defineOAuthProviderExecutors, defineProviderProxy, requiredInputString } from "../provider-runtime.ts";
 
 const service = "outlook_calendar";
@@ -139,6 +140,13 @@ async function listEvents(
   // a deltaLink starts the next one.
   const followUpLink = optionalString(input.nextLink) ?? (calendarView ? optionalString(input.deltaLink) : undefined);
   const delta = calendarView && input.delta === true;
+  if (
+    delta &&
+    !followUpLink &&
+    [input.select, input.filter, input.orderby, input.expand].some((value) => value !== undefined)
+  ) {
+    throw providerInputError("Calendar view delta does not support select, filter, orderby or expand.");
+  }
   const calendar = optionalString(input.calendarId);
   const collection = calendarView ? "calendarView" : "events";
   const path = `${calendar ? `me/calendars/${encodePathSegment(calendar)}/${collection}` : `me/${collection}`}${delta ? "/delta" : ""}`;

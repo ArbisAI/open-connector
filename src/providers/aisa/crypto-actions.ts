@@ -198,7 +198,7 @@ export const getCryptoNewsAction: ActionDefinition = defineProviderAction(servic
     {
       coinId,
       language: s.string("The news language code."),
-      articleType: s.string("The CoinGecko news content type."),
+      articleType: s.stringEnum("The CoinGecko news content type.", ["news", "guides"]),
       page: s.integer("The one-based result page.", { minimum: 1 }),
       perPage: s.integer("The maximum articles per page.", { minimum: 1 }),
     },

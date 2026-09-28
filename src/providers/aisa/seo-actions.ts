@@ -5,7 +5,14 @@ import { defineProviderAction } from "../../core/provider-definition.ts";
 
 const service = "aisa";
 const database = s.string("The Semrush regional database code, such as us.");
-const semrushOutput = s.looseObject("The parsed Semrush report returned by AIsa.");
+const semrushOutput = s.requiredObject("The parsed Semrush report returned by AIsa.", {
+  rawText: s.string("The original semicolon-delimited response returned by AIsa."),
+  columns: s.array("The report columns in response order.", s.string("A report column name.")),
+  rows: s.array(
+    "The report rows in response order.",
+    s.array("One report row aligned with columns.", s.string("A raw Semrush field value.")),
+  ),
+});
 const backlinkTargetType = s.stringEnum("How Semrush should interpret the backlink target.", [
   "root_domain",
   "domain",
@@ -30,18 +37,14 @@ export const semrushKeywordDifficultyAction: ActionDefinition = defineProviderAc
   operationType: "read",
   description: "Get keyword-difficulty scores for up to 20 keywords.",
   requiredScopes: [],
-  inputSchema: s.object(
-    "Keywords and a regional database for a Semrush difficulty report.",
-    {
-      phrases: s.array("The one to twenty keywords to analyze.", s.string("A keyword phrase."), {
-        minItems: 1,
-        maxItems: 20,
-        uniqueItems: true,
-      }),
-      database,
-    },
-    { optional: ["database"] },
-  ),
+  inputSchema: s.requiredObject("Keywords and a regional database for a Semrush difficulty report.", {
+    phrases: s.array("The one to twenty keywords to analyze.", s.string("A keyword phrase."), {
+      minItems: 1,
+      maxItems: 20,
+      uniqueItems: true,
+    }),
+    database,
+  }),
   outputSchema: semrushOutput,
 });
 
@@ -50,11 +53,10 @@ export const semrushBroadMatchKeywordsAction: ActionDefinition = defineProviderA
   operationType: "read",
   description: "Find broad-match keyword ideas for a seed phrase.",
   requiredScopes: [],
-  inputSchema: s.object(
-    "A seed phrase and regional database for Semrush broad-match ideas.",
-    { phrase: s.string("The seed keyword phrase."), database },
-    { optional: ["database"] },
-  ),
+  inputSchema: s.requiredObject("A seed phrase and regional database for Semrush broad-match ideas.", {
+    phrase: s.string("The seed keyword phrase."),
+    database,
+  }),
   outputSchema: semrushOutput,
 });
 
@@ -63,11 +65,10 @@ export const semrushQuestionKeywordsAction: ActionDefinition = defineProviderAct
   operationType: "read",
   description: "Find question-form keyword ideas for a seed phrase.",
   requiredScopes: [],
-  inputSchema: s.object(
-    "A seed phrase and regional database for Semrush question keywords.",
-    { phrase: s.string("The seed keyword phrase."), database },
-    { optional: ["database"] },
-  ),
+  inputSchema: s.requiredObject("A seed phrase and regional database for Semrush question keywords.", {
+    phrase: s.string("The seed keyword phrase."),
+    database,
+  }),
   outputSchema: semrushOutput,
 });
 
@@ -141,8 +142,100 @@ export const semrushBacklinkCompetitorsAction: ActionDefinition = defineProvider
   }),
   outputSchema: semrushOutput,
 });
-
+export const semrushDomainOverviewAction: ActionDefinition = defineProviderAction(service, {
+  name: "get_semrush_domain_overview",
+  operationType: "read",
+  description: "Get current Semrush rank, organic keyword, traffic, cost, and paid keyword totals for a domain.",
+  requiredScopes: [],
+  inputSchema: s.object(
+    "A domain and optional regional database for its Semrush overview.",
+    {
+      domain: s.string("The domain to analyze without a path."),
+      database: s.string("The Semrush regional database code, such as us. Defaults to us when omitted."),
+    },
+    { optional: ["database"] },
+  ),
+  outputSchema: semrushOutput,
+});
+export const semrushOrganicResultsAction: ActionDefinition = defineProviderAction(service, {
+  name: "get_semrush_organic_results",
+  operationType: "read",
+  description: "List domains, URLs, and raw SERP feature codes for a keyword in Google organic search.",
+  requiredScopes: [],
+  inputSchema: s.object(
+    "A keyword and optional regional database for its organic search results.",
+    {
+      phrase: s.string("The keyword phrase to analyze."),
+      database: s.string("The Semrush regional database code, such as us. Defaults to us when omitted."),
+    },
+    { optional: ["database"] },
+  ),
+  outputSchema: semrushOutput,
+});
+export const semrushDomainOrganicKeywordsAction: ActionDefinition = defineProviderAction(service, {
+  name: "get_semrush_domain_organic_keywords",
+  operationType: "read",
+  description: "List a domain's Google organic keywords with positions, search volume, CPC, and ranking URLs.",
+  requiredScopes: [],
+  inputSchema: s.requiredObject("A domain and regional database for its organic keywords.", {
+    domain: s.string("The domain to analyze without a path."),
+    database,
+  }),
+  outputSchema: semrushOutput,
+});
+export const semrushOrganicCompetitorsAction: ActionDefinition = defineProviderAction(service, {
+  name: "get_semrush_organic_competitors",
+  operationType: "read",
+  description: "Find Google organic search competitors with relevance and shared keyword counts.",
+  requiredScopes: [],
+  inputSchema: s.requiredObject("A domain and regional database for its organic search competitors.", {
+    domain: s.string("The domain to analyze without a path."),
+    database,
+  }),
+  outputSchema: semrushOutput,
+});
+export const semrushUrlOrganicKeywordsAction: ActionDefinition = defineProviderAction(service, {
+  name: "get_semrush_url_organic_keywords",
+  operationType: "read",
+  description: "List a landing page's Google organic keywords with positions, search volume, and CPC.",
+  requiredScopes: [],
+  inputSchema: s.requiredObject("A landing page URL and regional database for its organic keywords.", {
+    url: s.string("The complete landing page URL to analyze."),
+    database,
+  }),
+  outputSchema: semrushOutput,
+});
+export const semrushBacklinkAnchorsAction: ActionDefinition = defineProviderAction(service, {
+  name: "get_semrush_backlink_anchors",
+  operationType: "read",
+  description: "Get backlink anchor text and backlink counts for a domain or URL.",
+  requiredScopes: [],
+  inputSchema: s.requiredObject("A Semrush backlink target and target type for anchor-text distribution.", {
+    target: s.string("The domain or URL whose backlink anchors should be returned."),
+    targetType: backlinkTargetType,
+  }),
+  outputSchema: semrushOutput,
+});
+export const semrushIndexedPagesAction: ActionDefinition = defineProviderAction(service, {
+  name: "get_semrush_indexed_pages",
+  operationType: "read",
+  description:
+    "List pages with backlinks and their backlink counts; this report does not verify Google indexation or live HTTP status.",
+  requiredScopes: [],
+  inputSchema: s.requiredObject("A Semrush backlink target and target type for pages with backlinks.", {
+    target: s.string("The domain or URL whose linked pages should be returned."),
+    targetType: backlinkTargetType,
+  }),
+  outputSchema: semrushOutput,
+});
 export const seoActions: ActionDefinition[] = [
+  semrushDomainOverviewAction,
+  semrushOrganicResultsAction,
+  semrushDomainOrganicKeywordsAction,
+  semrushOrganicCompetitorsAction,
+  semrushUrlOrganicKeywordsAction,
+  semrushBacklinkAnchorsAction,
+  semrushIndexedPagesAction,
   semrushKeywordOverviewAction,
   semrushKeywordDifficultyAction,
   semrushBroadMatchKeywordsAction,

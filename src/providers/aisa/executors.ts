@@ -7,7 +7,6 @@ import {
   defineProviderProxy,
   providerInputError,
   ProviderRequestError,
-  readProviderJsonBody,
   runProviderRequest,
 } from "../provider-runtime.ts";
 
@@ -25,7 +24,18 @@ interface AisaActionRoute {
   bodyKeyAliases?: Record<string, string>;
   pathParams?: Record<string, string>;
   fixedQuery?: Record<string, string>;
+  omitQueryDefaults?: Record<string, unknown>;
+  response?: AisaResponseFormat;
 }
+
+interface AisaSemicolonResponse {
+  type: "semicolon";
+  header: "required" | "optional";
+  columns?: readonly string[];
+  headerAliases?: readonly (readonly string[])[];
+}
+
+type AisaResponseFormat = AisaSemicolonResponse;
 
 function dataForSeoRoute(path: string, body: Record<string, string>): AisaActionRoute {
   return { path, method: "POST", query: {}, body, bodyArray: true, snakeCaseBody: true };
@@ -254,9 +264,10 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
     query: { woeid: "woeid", count: "count" },
   },
   enrich_apollo_person: {
-    path: "/apis/v2/apollo/people/match",
+    path: "/apis/v1/apollo/people/match",
     method: "POST",
-    query: {
+    query: {},
+    body: {
       firstName: "first_name",
       lastName: "last_name",
       name: "name",
@@ -269,7 +280,7 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
     },
   },
   enrich_apollo_people: {
-    path: "/apis/v2/apollo/people/bulk_match",
+    path: "/apis/v1/apollo/people/bulk_match",
     method: "POST",
     query: {},
     body: { people: "details" },
@@ -277,16 +288,16 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
     bodyKeyAliases: { personId: "id" },
   },
   enrich_apollo_organization: {
-    path: "/apis/v2/apollo/organizations/enrich",
+    path: "/apis/v1/apollo/organizations/enrich",
     query: { domain: "domain" },
   },
   enrich_apollo_organizations: {
-    path: "/apis/v2/apollo/organizations/bulk_enrich",
+    path: "/apis/v1/apollo/organizations/bulk_enrich",
     method: "POST",
     query: { domains: "domains[]" },
   },
   search_apollo_people: {
-    path: "/apis/v2/apollo/mixed_people/api_search",
+    path: "/apis/v1/apollo/mixed_people/api_search",
     method: "POST",
     query: {
       titles: "person_titles[]",
@@ -303,7 +314,7 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
     },
   },
   search_apollo_organizations: {
-    path: "/apis/v2/apollo/mixed_companies/search",
+    path: "/apis/v1/apollo/mixed_companies/search",
     method: "POST",
     query: {
       domains: "q_organization_domains_list[]",
@@ -317,17 +328,17 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
     },
   },
   get_apollo_organization: {
-    path: "/apis/v2/apollo/organizations/{organizationId}",
+    path: "/apis/v1/apollo/organizations/{organizationId}",
     pathParams: { organizationId: "organizationId" },
     query: {},
   },
   get_apollo_job_postings: {
-    path: "/apis/v2/apollo/organizations/{organizationId}/job_postings",
+    path: "/apis/v1/apollo/organizations/{organizationId}/job_postings",
     pathParams: { organizationId: "organizationId" },
     query: { page: "page", perPage: "per_page" },
   },
   search_apollo_company_news: {
-    path: "/apis/v2/apollo/news_articles/search",
+    path: "/apis/v1/apollo/news_articles/search",
     method: "POST",
     query: {
       organizationIds: "organization_ids[]",
@@ -549,46 +560,105 @@ const aisaActionRoutes: Record<string, AisaActionRoute> = {
     query: {},
     body: { profileUrl: "profile_url" },
   },
+  get_semrush_domain_overview: {
+    path: "/apis/v1/semrush/domain-overview",
+    query: { domain: "domain", database: "database" },
+    response: {
+      type: "semicolon",
+      header: "optional",
+      columns: ["Database", "Domain", "Rank", "OrganicKeywords", "OrganicTraffic", "OrganicCost", "AdwordsKeywords"],
+    },
+  },
+  get_semrush_organic_results: {
+    path: "/apis/v1/semrush/keyword-organic-results",
+    query: { phrase: "phrase", database: "database" },
+    response: { type: "semicolon", header: "required" },
+  },
+  get_semrush_domain_organic_keywords: {
+    path: "/apis/v1/semrush/domain-organic-keywords",
+    query: { domain: "domain", database: "database" },
+    response: { type: "semicolon", header: "required" },
+  },
+  get_semrush_organic_competitors: {
+    path: "/apis/v1/semrush/domain-organic-competitors",
+    query: { domain: "domain", database: "database" },
+    response: { type: "semicolon", header: "required" },
+  },
+  get_semrush_url_organic_keywords: {
+    path: "/apis/v1/semrush/url-organic-keywords",
+    query: { url: "url", database: "database" },
+    response: { type: "semicolon", header: "required" },
+  },
+  get_semrush_backlink_anchors: {
+    path: "/apis/v1/semrush/backlink-anchors",
+    query: { target: "target", targetType: "target_type" },
+    response: { type: "semicolon", header: "required" },
+  },
+  get_semrush_indexed_pages: {
+    path: "/apis/v1/semrush/indexed-pages",
+    query: { target: "target", targetType: "target_type" },
+    response: { type: "semicolon", header: "required" },
+  },
   get_semrush_keyword_overview: {
     path: "/apis/v1/semrush/keyword-overview",
     query: { phrase: "phrase", database: "database" },
+    response: {
+      type: "semicolon",
+      header: "optional",
+      columns: ["Keyword", "SearchVolume", "CPC", "Competition", "NumberOfResults"],
+    },
+    omitQueryDefaults: { database: "us" },
   },
   get_semrush_keyword_difficulty: {
     path: "/apis/v1/semrush/keyword-difficulty",
     query: { phrases: "phrase", database: "database" },
     joined: { phrases: ";" },
+    response: { type: "semicolon", header: "required" },
   },
   get_semrush_broad_match_keywords: {
     path: "/apis/v1/semrush/broad-match-keywords",
     query: { phrase: "phrase", database: "database" },
+    response: { type: "semicolon", header: "required" },
   },
   get_semrush_question_keywords: {
     path: "/apis/v1/semrush/question-keywords",
     query: { phrase: "phrase", database: "database" },
+    response: { type: "semicolon", header: "required" },
   },
   get_semrush_domain_rank_history: {
     path: "/apis/v1/semrush/domain-rank-history",
     query: { domain: "domain", database: "database" },
+    response: { type: "semicolon", header: "required" },
   },
   compare_semrush_domains: {
     path: "/apis/v1/semrush/domain-vs-domain",
     query: { comparison: "domains", database: "database" },
+    response: { type: "semicolon", header: "required" },
   },
   get_semrush_backlinks_overview: {
     path: "/apis/v1/semrush/backlinks-overview",
     query: { target: "target" },
+    response: {
+      type: "semicolon",
+      header: "optional",
+      columns: ["ascore", "total_backlinks", "referring_domains", "referring_urls", "referring_ips"],
+      headerAliases: [["ascore", "total", "domains_num", "urls_num", "ips_num"]],
+    },
   },
   get_semrush_backlinks: {
     path: "/apis/v1/semrush/backlinks",
     query: { target: "target", targetType: "target_type" },
+    response: { type: "semicolon", header: "required" },
   },
   get_semrush_referring_domains: {
     path: "/apis/v1/semrush/referring-domains",
     query: { target: "target", targetType: "target_type" },
+    response: { type: "semicolon", header: "required" },
   },
   get_semrush_backlink_competitors: {
     path: "/apis/v1/semrush/backlink-competitors",
     query: { target: "target", targetType: "target_type" },
+    response: { type: "semicolon", header: "required" },
   },
   get_stock_price_snapshot: {
     path: "/apis/v1/financial/prices/snapshot",
@@ -810,6 +880,7 @@ function buildAisaQuery(
   commaSeparated: readonly string[],
   joined: Record<string, string>,
   fixed: Record<string, string>,
+  omitDefaults: Record<string, unknown>,
 ) {
   const query = new URLSearchParams();
   for (const [name, value] of Object.entries(fixed)) {
@@ -817,7 +888,7 @@ function buildAisaQuery(
   }
   for (const [inputName, queryName] of Object.entries(mapping)) {
     const value = input[inputName];
-    if (value == null) {
+    if (value == null || value === omitDefaults[inputName]) {
       continue;
     }
     const queryNames = typeof queryName === "string" ? [queryName] : queryName;
@@ -855,12 +926,21 @@ const handlers = Object.fromEntries(
   Object.entries(aisaActionRoutes).map(([name, route]) => [
     name,
     (input: Record<string, unknown>, context: ApiKeyProviderContext) =>
-      requestAisaJson(
+      requestAisa(
         buildAisaPath(route.path, input, route.pathParams),
-        buildAisaQuery(input, route.query, route.commaSeparated ?? [], route.joined ?? {}, route.fixedQuery ?? {}),
+        buildAisaQuery(
+          input,
+          route.query,
+          route.commaSeparated ?? [],
+          route.joined ?? {},
+          route.fixedQuery ?? {},
+          route.omitQueryDefaults ?? {},
+        ),
         context,
         route.method ?? "GET",
         buildAisaBody(input, route),
+        "execute",
+        route.response,
       ),
   ]),
 ) as ProviderActionHandlers<"aisa", Handler>;
@@ -873,13 +953,16 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
   baseUrl: aisaApiOrigin,
   auth: { type: "bearer" },
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json, text/plain;q=0.9, */*;q=0.8");
+  },
   skipDnsValidation: true,
 });
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const payload = optionalRecord(
-      await requestAisaJson(
+      await requestAisa(
         "/v1/credits/balance",
         new URLSearchParams(),
         { apiKey: input.apiKey, fetcher, signal },
@@ -897,18 +980,22 @@ export const credentialValidators: CredentialValidators = {
   },
 };
 
-async function requestAisaJson(
+async function requestAisa(
   path: string,
   query: URLSearchParams,
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">,
   method: "GET" | "POST",
   body: unknown,
   phase: "validate" | "execute" = "execute",
+  responseFormat?: AisaResponseFormat,
 ): Promise<unknown> {
   return runProviderRequest({ signal: context.signal, label: "AIsa" }, async (signal) => {
     const url = new URL(path, aisaApiOrigin);
     url.search = query.toString();
-    const headers = new Headers({ accept: "application/json", authorization: `Bearer ${context.apiKey}` });
+    const headers = new Headers({
+      accept: responseFormat ? "text/plain, application/json;q=0.9" : "application/json",
+      authorization: `Bearer ${context.apiKey}`,
+    });
     if (body !== undefined) headers.set("content-type", "application/json");
     const response = await context.fetcher(url, {
       method,
@@ -916,20 +1003,136 @@ async function requestAisaJson(
       signal,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const payload = await readProviderJsonBody(response, {
-      emptyBody: null,
-      invalidJsonMessage: "AIsa returned invalid JSON",
-    });
+    const payload = await readAisaPayload(response, responseFormat);
     if (!response.ok) throw createAisaError(response, payload, phase);
     return payload;
   });
 }
 
+async function readAisaPayload(response: Response, responseFormat: AisaResponseFormat | undefined) {
+  const text = await response.text();
+  if (text.trim() === "") {
+    return response.ok && responseFormat?.type === "semicolon" ? createSemicolonOutput(text, responseFormat) : null;
+  }
+  if (response.ok && responseFormat?.type === "semicolon") {
+    return createSemicolonOutput(text, responseFormat);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    if (!response.ok) {
+      return text;
+    }
+    throw new ProviderRequestError(502, "AIsa returned invalid JSON");
+  }
+}
+
+function createSemicolonOutput(rawText: string, responseFormat: AisaSemicolonResponse) {
+  const records = isEmptySemrushReport(rawText) ? [] : parseSemicolonRecords(rawText);
+  const columns = responseFormat.header === "required" ? (records.shift() ?? []) : [...(responseFormat.columns ?? [])];
+  const acceptedHeaders = [columns, ...(responseFormat.headerAliases ?? [])];
+  if (
+    responseFormat.header === "optional" &&
+    records[0] &&
+    acceptedHeaders.some((header) => columnsMatch(records[0]!, header))
+  ) {
+    records.shift();
+  }
+  return { rawText, columns, rows: records };
+}
+
+function isEmptySemrushReport(rawText: string): boolean {
+  const message = rawText.trim();
+  if (!message.startsWith("ERROR ")) {
+    return false;
+  }
+  const separatorIndex = message.indexOf(" :: ");
+  const code = separatorIndex === -1 ? undefined : message.slice(6, separatorIndex).trim();
+  // Semrush code 50 means no matching data.
+  if (code === "50") return true;
+  const detail = separatorIndex === -1 ? message : message.slice(separatorIndex + 4).trim();
+  throw new ProviderRequestError(502, code ? `Semrush error ${code}: ${detail}` : `Semrush error: ${detail}`);
+}
+
+function columnsMatch(values: readonly string[], columns: readonly string[]) {
+  return (
+    values.length === columns.length &&
+    values.every((value, index) => normalizeColumnName(value) === normalizeColumnName(columns[index]!))
+  );
+}
+
+function normalizeColumnName(value: string) {
+  let output = "";
+  for (const character of value.toLowerCase()) {
+    const code = character.charCodeAt(0);
+    if ((code >= 48 && code <= 57) || (code >= 97 && code <= 122)) {
+      output += character;
+    }
+  }
+  return output;
+}
+
+function parseSemicolonRecords(text: string) {
+  const records: string[][] = [];
+  let record: string[] = [];
+  let field = "";
+  let quoted = false;
+
+  const commitField = () => {
+    record.push(field);
+    field = "";
+  };
+  const commitRecord = () => {
+    commitField();
+    records.push(record);
+    record = [];
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (quoted) {
+      if (character !== '"') {
+        field += character;
+        continue;
+      }
+      if (text[index + 1] === '"') {
+        field += '"';
+        index += 1;
+        continue;
+      }
+      quoted = false;
+      continue;
+    }
+
+    if (character === '"' && field === "") {
+      quoted = true;
+    } else if (character === ";") {
+      commitField();
+    } else if (character === "\n") {
+      commitRecord();
+    } else if (character !== "\r") {
+      field += character;
+    }
+  }
+  commitRecord();
+
+  while (records.length > 0 && records.at(-1)?.every((value) => value === "")) {
+    records.pop();
+  }
+  if (records[0]?.[0]?.charCodeAt(0) === 0xfeff) {
+    records[0]![0] = records[0]![0]!.slice(1);
+  }
+  return records;
+}
+
 function createAisaError(response: Response, payload: unknown, phase: "validate" | "execute"): ProviderRequestError {
-  const error = optionalRecord(optionalRecord(payload)?.error);
+  const errorValue = optionalRecord(payload)?.error;
+  const error = optionalRecord(errorValue);
   const code = optionalString(error?.code);
   const message =
     optionalString(error?.message) ??
+    optionalString(errorValue) ??
+    optionalString(payload) ??
     optionalString(optionalRecord(payload)?.message) ??
     `AIsa request failed with status ${response.status}`;
   if (response.status === 429) return new ProviderRequestError(429, message, payload);

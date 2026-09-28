@@ -152,7 +152,7 @@ export const discordbotGuildActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "modify_guild_channel_positions",
-    operationType: "write",
+    operationType: "destructive",
     description:
       "Reorder or re-parent channels in a Discord guild. Requires the MANAGE_CHANNELS permission. Only one entry per request may change parent_id.",
     inputSchema: guildSchema(
@@ -647,7 +647,7 @@ export const discordbotGuildActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "modify_guild_incident_actions",
-    operationType: "write",
+    operationType: "destructive",
     description:
       "Pause invites or direct messages in a Discord guild for up to 24 hours. Requires the MANAGE_GUILD permission.",
     inputSchema: guildSchema("Input parameters for updating guild incident actions.", {

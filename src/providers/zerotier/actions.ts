@@ -133,7 +133,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "update_network",
-    operationType: "write",
+    operationType: "destructive",
     description: "Update a ZeroTier network's name, description, and/or configuration fields.",
     inputSchema: s.object(
       "Input for updating a ZeroTier network.",
@@ -184,7 +184,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "update_member",
-    operationType: "write",
+    operationType: "destructive",
     description:
       "Update a network member. v1 fields: name, description, authorized, activeBridge, noAutoAssignIps, ipAssignments. v2 fields: name, description, activeBridge, noAutoAssignIps, ipv4Assignments, ipv6Assignments. Fields from the other API version are rejected; on v2 change authorization with authorize_member or deauthorize_member.",
     inputSchema: s.object(
@@ -229,7 +229,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "deauthorize_member",
-    operationType: "write",
+    operationType: "destructive",
     description: "Revoke authorization for one member on a ZeroTier network.",
     inputSchema: s.object(
       "Input for de-authorizing a network member.",
@@ -741,7 +741,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "update_webhook",
-    operationType: "write",
+    operationType: "destructive",
     description: "v2 only: update a webhook's URL, event list, or description.",
     inputSchema: s.object(
       "Input for updating a webhook.",
@@ -768,7 +768,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "rotate_webhook_secret",
-    operationType: "write",
+    operationType: "destructive",
     description: "v2 only: rotate a webhook's signing secret.",
     inputSchema: s.object(
       "Input for rotating a webhook secret.",
@@ -888,7 +888,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "deauthorize_members",
-    operationType: "write",
+    operationType: "destructive",
     description: "v2 only: de-authorize multiple members on a network in one call.",
     inputSchema: s.object(
       "Input for de-authorizing members.",
@@ -899,7 +899,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "reject_members",
-    operationType: "write",
+    operationType: "destructive",
     description: "v2 only: reject multiple members on a network in one call.",
     inputSchema: s.object(
       "Input for rejecting members.",
@@ -910,7 +910,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "reject_member",
-    operationType: "write",
+    operationType: "destructive",
     description: "v2 only: reject one member on a network.",
     inputSchema: s.object(
       "Input for rejecting a member.",
@@ -928,7 +928,7 @@ export const zerotierActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "update_flow_rules",
-    operationType: "write",
+    operationType: "destructive",
     description: "v2 only (beta): update a network's flow rules (custom rule source or isolation config).",
     inputSchema: s.object(
       "Input for updating flow rules.",

@@ -191,28 +191,28 @@ export const getAiKeywordVolumeAction: ActionDefinition = defineProviderAction(s
   operationType: "read",
   description: "Get AI-search volume estimates for up to 1,000 keywords.",
   requiredScopes: [],
-  inputSchema: s.requireAnyProperty(
-    s.requireAnyProperty(
-      s.object(
-        "Keywords, location, language, and optional tag for an AI keyword-volume query.",
-        {
-          keywords: s.array("The keywords to measure.", s.string("A keyword of up to 250 characters."), {
-            minItems: 1,
-            maxItems: 1000,
-            uniqueItems: true,
-          }),
-          locationName: s.string("The full location name; omit when using locationCode."),
-          locationCode: s.integer("The DataForSEO location code; omit when using locationName."),
-          languageName: s.string("The full language name; omit when using languageCode."),
-          languageCode: s.string("The language code; omit when using languageName."),
-          tag: llmFields.tag,
-        },
-        { optional: ["locationName", "locationCode", "languageName", "languageCode", "tag"] },
-      ),
-      ["locationName", "locationCode"],
+  inputSchema: {
+    ...s.object(
+      "Keywords, location, language, and optional tag for an AI keyword-volume query.",
+      {
+        keywords: s.array("The keywords to measure.", s.string("A keyword of up to 250 characters."), {
+          minItems: 1,
+          maxItems: 1000,
+          uniqueItems: true,
+        }),
+        locationName: s.string("The full location name; omit when using locationCode."),
+        locationCode: s.integer("The DataForSEO location code; omit when using locationName."),
+        languageName: s.string("The full language name; omit when using languageCode."),
+        languageCode: s.string("The language code; omit when using languageName."),
+        tag: llmFields.tag,
+      },
+      { optional: ["locationName", "locationCode", "languageName", "languageCode", "tag"] },
     ),
-    ["languageName", "languageCode"],
-  ),
+    allOf: [
+      { anyOf: [{ required: ["locationName"] }, { required: ["locationCode"] }] },
+      { anyOf: [{ required: ["languageName"] }, { required: ["languageCode"] }] },
+    ],
+  },
   outputSchema: dataForSeoOutput,
 });
 

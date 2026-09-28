@@ -155,7 +155,7 @@ export const getTwitterTrendsAction: ActionDefinition = defineProviderAction(ser
     "A WOEID and optional result limit for Twitter trends.",
     {
       woeid: s.integer("The Where On Earth ID for the target location."),
-      count: s.integer("The maximum number of trends to return.", { minimum: 1 }),
+      count: s.integer("The maximum number of trends to return.", { minimum: 30 }),
     },
     { optional: ["count"] },
   ),
