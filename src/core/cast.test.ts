@@ -24,6 +24,18 @@ describe("cast helpers", () => {
     expect(optionalNumberLike("")).toBeUndefined();
     expect(optionalNumberLike("not-a-number")).toBeUndefined();
   });
+
+  it("treats whitespace-only optional numbers as missing", () => {
+    expect(optionalNumberLike(" \t\n")).toBeUndefined();
+  });
+
+  it("preserves present optional numbers including zero and padded decimals", () => {
+    expect(optionalNumberLike(0)).toBe(0);
+    expect(optionalNumberLike("0")).toBe(0);
+    expect(optionalNumberLike(5.5)).toBe(5.5);
+    expect(optionalNumberLike(" 5.5 ")).toBe(5.5);
+  });
+
   it("decodes strict base64 bytes", () => {
     expect(Array.from(base64Bytes("aGVsbG8=", "payload"))).toEqual([104, 101, 108, 108, 111]);
   });

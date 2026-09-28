@@ -265,10 +265,13 @@ export function optionalNumber(value: unknown): number | undefined {
 /**
  * Return a finite number from a number or numeric string when present. Examples:
  * `optionalNumberLike("1.5") => 1.5`, `optionalNumberLike("x") => undefined`.
+ *
+ * A blank or whitespace-only string is reported as missing rather than parsed, because
+ * `Number(" ")` is `0` and a blank field would otherwise surface as a real zero.
  */
 export function optionalNumberLike(value: unknown): number | undefined {
   const parsed =
-    typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : Number.NaN;
+    typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
