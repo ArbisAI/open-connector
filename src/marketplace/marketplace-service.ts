@@ -3,7 +3,7 @@ import type { ExecutionResult } from "../core/types.ts";
 import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
 
 import { assertPublicHttpUrl } from "../core/request.ts";
-import { providerFetch } from "../providers/provider-runtime.ts";
+import { isAbortLikeError, providerFetch } from "../providers/provider-runtime.ts";
 import { defaultMarketplaceDiscoveryUrl } from "./default-marketplace.ts";
 const maximumDiscoveryBytes = 4 * 1024 * 1024;
 
@@ -299,7 +299,13 @@ export class MarketplaceService {
         `Marketplace discovery failed with HTTP ${response.status}.`,
         502,
       );
-    return parseDiscovery(await readBoundedJson(response, maximumDiscoveryBytes), url);
+    let discovery: unknown;
+    try {
+      discovery = await readBoundedJson(response, maximumDiscoveryBytes);
+    } catch (error) {
+      throw marketplaceRequestError(error);
+    }
+    return parseDiscovery(discovery, url);
   }
 
   private async validateApiKey(discoveryUrl: string, validatePath: string, apiKey: string): Promise<void> {
@@ -332,9 +338,25 @@ export class MarketplaceService {
     }
   }
 
-  private fetch(input: URL, init: RequestInit): Promise<Response> {
-    return (this.options.fetcher ?? providerFetch)(input, init);
+  private async fetch(input: URL, init: RequestInit): Promise<Response> {
+    try {
+      return await (this.options.fetcher ?? providerFetch)(input, init);
+    } catch (error) {
+      throw marketplaceRequestError(error);
+    }
   }
+}
+
+function marketplaceRequestError(error: unknown): MarketplaceError {
+  if (error instanceof MarketplaceError) return error;
+  if (isAbortLikeError(error)) {
+    return new MarketplaceError("marketplace_unavailable", "Marketplace request timed out.", 504);
+  }
+  return new MarketplaceError(
+    "marketplace_unavailable",
+    error instanceof Error ? `Marketplace request failed: ${error.message}` : "Marketplace request failed.",
+    502,
+  );
 }
 
 async function readBoundedJson(response: Response, maximumBytes: number): Promise<unknown> {

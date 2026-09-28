@@ -28,6 +28,103 @@ const provider: ProviderDefinition = {
 };
 
 describe("MarketplaceService", () => {
+  it.each([
+    { failure: new TypeError("terminated"), status: 502, message: "Marketplace request failed: terminated" },
+    { failure: new DOMException("Timed out", "TimeoutError"), status: 504, message: "Marketplace request timed out." },
+    { failure: new DOMException("Aborted", "AbortError"), status: 504, message: "Marketplace request timed out." },
+  ])("maps discovery body failures to HTTP $status", async ({ failure, status, message }) => {
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (reads++ === 0) controller.enqueue(new TextEncoder().encode('{"version":'));
+        else controller.error(failure);
+      },
+    });
+    const store = new MemoryMarketplaceStore();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+    const service = new MarketplaceService({
+      catalog: createCatalogStore([provider]),
+      store,
+      secretCodec: reversibleCodec,
+      fetcher,
+    });
+    await expect(service.configure({ apiKey: "secret" })).rejects.toMatchObject({
+      code: "marketplace_unavailable",
+      status,
+      message,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await store.getConfig()).toBeUndefined();
+    expect(service.getState().configured).toBe(false);
+  });
+
+  it("preserves the discovery size-limit error and cancels the body", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(4 * 1024 * 1024 + 1));
+      },
+      cancel,
+    });
+    const service = new MarketplaceService({
+      catalog: createCatalogStore([provider]),
+      store: new MemoryMarketplaceStore(),
+      secretCodec: reversibleCodec,
+      fetcher: vi.fn<typeof fetch>().mockResolvedValue(new Response(body)),
+    });
+    await expect(service.configure({ apiKey: "secret" })).rejects.toMatchObject({
+      code: "invalid_marketplace_discovery",
+      status: 400,
+      message: "Marketplace discovery exceeds 4 MiB.",
+    });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["discovery", "validation"])("reports %s network failures as Marketplace errors", async (stage) => {
+    const fetcher = vi.fn<typeof fetch>();
+    if (stage === "validation") {
+      fetcher.mockResolvedValueOnce(
+        jsonResponse({
+          version: 1,
+          id: "test",
+          name: "Test Marketplace",
+          pricing: "metered",
+          validate: "/validate",
+          endpoint: "/actions",
+          actions: ["example.run"],
+        }),
+      );
+    }
+    fetcher.mockRejectedValueOnce(new Error("request URL must not resolve to private or reserved IP addresses"));
+    const store = new MemoryMarketplaceStore();
+    const service = new MarketplaceService({
+      catalog: createCatalogStore([provider]),
+      store,
+      secretCodec: reversibleCodec,
+      fetcher,
+    });
+    await expect(service.configure({ apiKey: "secret" })).rejects.toMatchObject({
+      code: "marketplace_unavailable",
+      status: 502,
+      message: "Marketplace request failed: request URL must not resolve to private or reserved IP addresses",
+    });
+    expect(await store.getConfig()).toBeUndefined();
+    expect(service.getState().configured).toBe(false);
+  });
+
+  it("reports network timeouts as gateway timeouts", async () => {
+    const service = new MarketplaceService({
+      catalog: createCatalogStore([provider]),
+      store: new MemoryMarketplaceStore(),
+      secretCodec: reversibleCodec,
+      fetcher: vi.fn<typeof fetch>().mockRejectedValue(new DOMException("Timed out", "TimeoutError")),
+    });
+    await expect(service.configure({ apiKey: "secret" })).rejects.toMatchObject({
+      code: "marketplace_unavailable",
+      status: 504,
+      message: "Marketplace request timed out.",
+    });
+  });
   it("keeps the current source on failed replacement and hides old preferences after a successful switch", async () => {
     const fetcher = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const url = new URL(String(input));
