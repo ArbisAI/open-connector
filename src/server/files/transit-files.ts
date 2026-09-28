@@ -170,18 +170,26 @@ export class TransitFileService implements IStagedTransitFileService {
   private async writeStream(file: TransitFileStream, tempPath: string): Promise<number> {
     let sizeBytes = 0;
     const maxBytes = this.maxBytes;
-    await pipeline(
-      Readable.fromWeb(file.body as NodeReadableStream<Uint8Array>),
-      async function* (source) {
-        for await (const chunk of source) {
-          sizeBytes += chunk.byteLength;
-          assertFileSize(sizeBytes, maxBytes);
-          yield chunk;
-        }
-      },
-      createWriteStream(tempPath, { flags: "wx" }),
-      { signal: file.signal },
-    );
+    const source = Readable.fromWeb(file.body as NodeReadableStream<Uint8Array>);
+    const destination = createWriteStream(tempPath, { flags: "wx" });
+    // Pipeline can reject while the file is still opening. Wait for close before unlinking it.
+    const closed = new Promise<void>((resolve) => destination.once("close", resolve));
+    try {
+      await pipeline(
+        source,
+        async function* (source) {
+          for await (const chunk of source) {
+            sizeBytes += chunk.byteLength;
+            assertFileSize(sizeBytes, maxBytes);
+            yield chunk;
+          }
+        },
+        destination,
+        { signal: file.signal },
+      );
+    } finally {
+      await closed;
+    }
     return sizeBytes;
   }
 }
