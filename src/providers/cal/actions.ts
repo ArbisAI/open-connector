@@ -400,7 +400,14 @@ const createBookingInputSchema = s.object(
     guests: s.stringArray("Additional guest email addresses."),
     meetingUrl: s.string("The meeting URL to attach to the booking."),
     location: rawObject("The location payload for the booking."),
-    metadata: rawObject("Additional metadata to attach to the booking."),
+    metadata: s.optional({
+      ...s.record(
+        "Additional booking metadata: at most 50 keys, each up to 40 characters, with string values up to 500 characters.",
+        s.string("A metadata value, up to 500 characters.", { maxLength: 500 }),
+      ),
+      maxProperties: 50,
+      propertyNames: s.string("A metadata key, up to 40 characters.", { maxLength: 40 }),
+    }),
     lengthInMinutes: s.positiveInteger("The requested booking duration in minutes."),
     routing: rawObject("Routing metadata for round-robin or collective bookings."),
     emailVerificationCode: s.string("The email verification code for protected bookings."),

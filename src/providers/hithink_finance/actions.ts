@@ -203,7 +203,9 @@ const stockHistoryInputSchema = s.object("Input for retrieving one A-share daily
 const statementInputSchema = {
   ...s.object("Input for retrieving recent or time-bounded financial statements.", {
     thscode: thscode("Complete A-share code including the market suffix."),
-    period: s.optional(s.stringEnum("Financial statement reporting cadence.", ["annual", "quarterly"])),
+    period: s.optional(
+      s.withDefault(s.stringEnum("Financial statement reporting cadence.", ["annual", "quarterly"]), "annual"),
+    ),
     limit: optionalInteger("Number of recent reporting periods to return.", 1, 20),
     startTimeMs: s.optional(s.integer("Inclusive statement window start in milliseconds.")),
     endTimeMs: s.optional(s.integer("Inclusive statement window end in milliseconds.")),

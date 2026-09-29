@@ -573,7 +573,7 @@ function getFinancialStatements(path: string, input: Record<string, unknown>, co
     path,
     {
       thscode: requiredInputString(input.thscode, "thscode"),
-      period: optionalString(input.period),
+      period: optionalString(input.period) ?? "annual",
       limit: optionalNumber(input.limit),
       start: optionalNumber(input.startTimeMs),
       end: optionalNumber(input.endTimeMs),
