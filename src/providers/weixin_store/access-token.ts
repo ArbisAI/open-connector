@@ -1,7 +1,7 @@
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
-import { optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import { optionalIntegerOrNull, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   ProviderRequestError,
   providerResponseError,
@@ -43,6 +43,17 @@ interface WechatAccessTokenCacheEntry {
   token: string;
   expiresAtMs: number;
 }
+
+/**
+ * WeChat Store errcodes outside the 4xxxx range that the category and
+ * qualification docs describe as bad parameters or materials, such as an
+ * invalid or non-leaf category id, a mismatched certificate group, or a file id
+ * that did not come from the qualification upload. The caller has to fix the
+ * input, so they map to 400 instead of an upstream failure.
+ */
+const wechatInvalidInputErrcodes = new Set([
+  9401020, 9700234, 10020017, 10020059, 10020060, 10020062, 10020063, 10020087, 10020094, 10020127, 10020504,
+]);
 
 const accessTokenCache = new Map<string, WechatAccessTokenCacheEntry>();
 const accessTokenInFlight = new Map<string, Promise<string>>();
@@ -160,7 +171,7 @@ export function parseWechatJson(rawText: string): Record<string, unknown> | unde
 
 /** Read the numeric errcode of a WeChat envelope; absent or non-numeric reads as null. */
 export function readWechatErrcode(record: Record<string, unknown> | undefined): number | null {
-  return optionalInteger(record?.errcode) ?? null;
+  return optionalIntegerOrNull(record?.errcode);
 }
 
 /** Whether the errcode marks the access token as invalid, so the caller can refresh and retry once. */
@@ -171,7 +182,8 @@ export function isWechatTokenError(errcode: number | null): boolean {
 /**
  * Map a failed WeChat API call to the shared provider error. Rate limits
  * (45009/45011) become 429, the missing-permission 48001 becomes 403, the
- * 4xxxx client errcodes become 400, and everything else becomes a 502.
+ * 4xxxx client errcodes and the documented invalid-input store errcodes become
+ * 400, and everything else becomes a 502.
  */
 export function normalizeWechatApiError(result: WechatApiResult): ProviderRequestError {
   const errcode = readWechatErrcode(result.record);
@@ -190,7 +202,7 @@ export function normalizeWechatApiError(result: WechatApiResult): ProviderReques
   if (errcode === 48001) {
     return new ProviderRequestError(403, message, result.record);
   }
-  if (errcode !== null && errcode >= 40000 && errcode < 50000) {
+  if (errcode !== null && ((errcode >= 40000 && errcode < 50000) || wechatInvalidInputErrcodes.has(errcode))) {
     return new ProviderRequestError(400, message, result.record);
   }
   if (result.status >= 400 && result.status < 500) {

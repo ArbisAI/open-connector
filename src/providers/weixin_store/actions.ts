@@ -1,4 +1,5 @@
 import type { ProviderActionDefinition } from "../../core/provider-definition.ts";
+import type { JsonSchema } from "../../core/types.ts";
 
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
@@ -45,6 +46,100 @@ const categoryDetailOutputSchema = s.looseObject("The upstream WeChat category d
     "The qualifications required to publish in this category.",
     s.looseObject("One qualification."),
   ),
+});
+
+/**
+ * A numeric WeChat id input. WeChat documents ids such as cat_id and brand_id as
+ * numbers but returns them as strings from list_categories and get_category, so
+ * both forms are accepted and the executor sends them upstream as numbers.
+ */
+function numericIdInput(description: string): JsonSchema {
+  return s.union(
+    [
+      s.positiveInteger("The id as a number."),
+      s.stringPattern("^[1-9][0-9]*$", { description: "The id as a numeric string." }),
+    ],
+    { description },
+  );
+}
+
+const qualificationImageOutputSchema = s.looseObject("The uploaded qualification image.", {
+  data: s.looseObject("The uploaded file reference.", {
+    file_id: s.nonEmptyString("The file id to use in a category or brand qualification application."),
+  }),
+});
+
+const categoryApplicationInputSchema = s.looseRequiredObject(
+  "The new category application, using WeChat field names.",
+  {
+    cats_v2: s.array(
+      "The category path from root to leaf, using cat_id values from list_categories.",
+      s.requiredObject("One category in the path.", { cat_id: numericIdInput("One category id in the path.") }),
+      { minItems: 1 },
+    ),
+    license_group_list: s.array(
+      "One selected license for each required certificate group from list_categories; empty when no licenses are required.",
+      s.requiredObject("One certificate group selection.", {
+        license_group_id: numericIdInput("The required certificate group id."),
+        license: s.requiredObject("The selected license.", {
+          license_id: numericIdInput("One permitted license id in the group."),
+          file_id_list: s.stringArray("Qualification image file ids from upload_qualification_image."),
+          license_field_list: s.array(
+            "The required license fields for this certificate.",
+            s.requiredObject("One license field.", {
+              key: s.nonEmptyString("The license field key."),
+              value: s.nonEmptyString("The license field value."),
+            }),
+          ),
+        }),
+      }),
+    ),
+    brand_list: s.optional(
+      s.array(
+        "Approved brand ids, required when get_category reports attr.is_limit_brand=true.",
+        s.requiredObject("An approved brand.", {
+          brand_id: numericIdInput("An approved brand id from list_valid_brands."),
+        }),
+        { minItems: 1 },
+      ),
+    ),
+  },
+);
+
+const categoryApplicationOutputSchema = s.looseObject("The created category audit application.", {
+  audit_id: s.positiveInteger("The audit id to pass to get_category_application."),
+});
+
+const categoryApplicationDetailOutputSchema = s.looseObject("The category audit application.", {
+  info: s.looseObject("The audit status and submitted materials.", {
+    audit_id: s.positiveInteger("The audit id."),
+    cat_id: s.positiveInteger("The leaf category id."),
+    status: s.integer("1 = in review, 2 = rejected, 3 = approved, 4 = canceled."),
+    audit_reason: s.string("The rejection reason, when rejected."),
+  }),
+});
+
+const categoryPermissionsOutputSchema = s.looseObject("The store's current category permissions.", {
+  list: s.array(
+    "The category permissions.",
+    s.looseObject("One category permission.", {
+      id: s.positiveInteger("The leaf category id."),
+      status: s.integer("1 = effective, 2 = expired."),
+      uneffective_reason: s.string("Why an expired permission is no longer effective."),
+    }),
+  ),
+});
+
+const productCategoryPrecheckOutputSchema = s.looseObject("The product publishing readiness check.", {
+  all_pass: s.boolean("Whether the store may publish in the category."),
+  fail_reasons: s.array("Reasons publishing is blocked.", s.unknown("One failure reason.")),
+});
+
+const categoryProductRuleOutputSchema = s.looseObject("The category's product publishing rules.", {
+  product_attr_list: s.array("Product attribute requirements.", s.looseObject("One product attribute rule.")),
+  sale_attr_list: s.array("SKU attribute requirements.", s.looseObject("One sale attribute rule.")),
+  product_qua_list: s.array("Product qualification requirements.", s.looseObject("One qualification rule.")),
+  floor_price: s.integer("The lowest allowed sale price, in cents."),
 });
 
 const brandListOutputSchema = s.looseObject("The upstream WeChat brand page.", {
@@ -220,6 +315,19 @@ const aftersaleManagePermission = "Manage the after-sale orders of the connected
 
 export const weixinStoreActions: ProviderActionDefinition[] = [
   defineProviderAction(service, {
+    name: "upload_qualification_image",
+    operationType: "write",
+    description:
+      "Upload a qualification image (up to 2 MB) and return the file_id required for category and brand applications. Product images from upload_image cannot be used here.",
+    inputSchema: s.actionInput(
+      { file: s.transitFile("The qualification image previously uploaded to the local transit file API.") },
+      ["file"],
+      "The qualification image to upload.",
+    ),
+    outputSchema: qualificationImageOutputSchema,
+    providerPermissions: ["Upload qualification images to the connected WeChat Store"],
+  }),
+  defineProviderAction(service, {
     name: "upload_image",
     operationType: "write",
     description:
@@ -262,11 +370,76 @@ export const weixinStoreActions: ProviderActionDefinition[] = [
     description:
       "Get the publishing rules of one leaf category: required product and sale attributes, brand restrictions, deposit, and qualifications.",
     inputSchema: s.actionInput(
-      { catId: s.positiveInteger("The id of a leaf category from list_categories.") },
+      { catId: numericIdInput("The id of a leaf category from list_categories.") },
       ["catId"],
       "The category to inspect.",
     ),
     outputSchema: categoryDetailOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "apply_category",
+    operationType: "write",
+    description:
+      "Apply for permission to sell in a leaf category using the new category tree and certificate groups. Returns an audit id; check the audit and effective permission before publishing products.",
+    inputSchema: s.actionInput(
+      { categoryInfo: categoryApplicationInputSchema },
+      ["categoryInfo"],
+      "The category application. The new certificate-group protocol is used automatically.",
+    ),
+    outputSchema: categoryApplicationOutputSchema,
+    providerPermissions: ["Apply for categories in the connected WeChat Store"],
+    followUpActions: ["weixin_store.get_category_application"],
+  }),
+  defineProviderAction(service, {
+    name: "get_category_application",
+    operationType: "read",
+    description: "Get the status and any rejection reason of a category application by audit id.",
+    inputSchema: s.actionInput(
+      { auditId: s.positiveInteger("The audit_id returned by apply_category.") },
+      ["auditId"],
+      "The category application to inspect.",
+    ),
+    outputSchema: categoryApplicationDetailOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "list_category_permissions",
+    operationType: "read",
+    description:
+      "List the store's category permissions. Filter to status 1 to find categories currently allowed for sale.",
+    inputSchema: s.actionInput(
+      { status: s.union([s.literal(1), s.literal(2)], { description: "1 = effective, 2 = expired; omit for both." }) },
+      [],
+      "The category permissions to list.",
+    ),
+    outputSchema: categoryPermissionsOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "precheck_product_category",
+    operationType: "read",
+    description:
+      "Check whether the store may publish in a leaf category, including category permission, deposit, freight insurance, and store restrictions. Omit catId for store-wide checks only.",
+    inputSchema: s.actionInput(
+      { catId: numericIdInput("The leaf category id to check; omit for a store-wide check.") },
+      [],
+      "The category to check before publishing.",
+    ),
+    outputSchema: productCategoryPrecheckOutputSchema,
+  }),
+  defineProviderAction(service, {
+    name: "get_category_product_rule",
+    operationType: "read",
+    description:
+      "Get the category's product attribute, sale attribute, qualification, price, and other publishing rules for the chosen release mode.",
+    inputSchema: s.actionInput(
+      {
+        catId: numericIdInput("The leaf category id."),
+        releaseMode: s.union([s.literal(0), s.literal(1)], { description: "0 = normal, 1 = simplified." }),
+        brandId: numericIdInput("An approved brand id when publishing a branded product."),
+      },
+      ["catId", "releaseMode"],
+      "The category publishing rules to retrieve.",
+    ),
+    outputSchema: categoryProductRuleOutputSchema,
   }),
   defineProviderAction(service, {
     name: "list_valid_brands",

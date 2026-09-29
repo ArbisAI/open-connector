@@ -2,7 +2,15 @@ import type { CredentialValidators, ExecutionContext, ProviderExecutors, Transit
 import type { ProviderActionHandlers, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
 import type { WechatApiResult, WeixinStoreCredential } from "./access-token.ts";
 
-import { compactObject, objectArray, optionalBoolean, optionalInteger, optionalString } from "../../core/cast.ts";
+import {
+  compactObject,
+  objectArray,
+  optionalBoolean,
+  optionalInteger,
+  optionalRecord,
+  optionalString,
+  positiveInteger,
+} from "../../core/cast.ts";
 import {
   createProviderFetch,
   defineProviderExecutors,
@@ -77,6 +85,20 @@ const deliveryProductFieldMap: Record<string, string> = {
 };
 
 const weixinStoreActionHandlers: ProviderActionHandlers<typeof service, WeixinStoreActionHandler> = {
+  async upload_qualification_image(input, context) {
+    const file = await readTransitFileInput(input.file, context);
+    if (file.sizeBytes > 2 * 1024 * 1024) {
+      throw providerInputError("file must be at most 2 MB");
+    }
+    const formData = new FormData();
+    formData.set("media", file.file, file.name);
+    return callWechatApi(context, {
+      method: "POST",
+      path: "/shop/ec/basics/qualification/upload",
+      body: formData,
+      timeoutMs: wechatImageUploadTimeoutMs,
+    });
+  },
   upload_image(input, context) {
     const imageUrl = optionalString(input.imageUrl);
     if ((imageUrl === undefined) === (input.file === undefined)) {
@@ -103,7 +125,54 @@ const weixinStoreActionHandlers: ProviderActionHandlers<typeof service, WeixinSt
     return callWechatApi(context, {
       method: "POST",
       path: "/shop/ec/category/detail",
-      body: { cat_id: readPositiveInteger(input.catId, "catId") },
+      body: { cat_id: positiveInteger(input.catId, "catId", providerInputError) },
+    });
+  },
+  apply_category(input, context) {
+    const categoryInfo = optionalRecord(input.categoryInfo);
+    if (!categoryInfo) {
+      throw providerInputError("categoryInfo must be an object");
+    }
+    return callWechatApi(context, {
+      method: "POST",
+      path: "/channels/ec/category/add",
+      body: { category_info: mapCategoryApplication(categoryInfo) },
+    });
+  },
+  get_category_application(input, context) {
+    return callWechatApi(context, {
+      method: "POST",
+      path: "/shop/ec/category/getbizcatflowdetail",
+      body: { audit_id: positiveInteger(input.auditId, "auditId", providerInputError) },
+    });
+  },
+  list_category_permissions(input, context) {
+    const status = optionalInteger(input.status);
+    return callWechatApi(context, {
+      method: "POST",
+      path: "/shop/ec/category/get_category_relation_list",
+      body: compactObject({ is_filter_status: status !== undefined, status }),
+    });
+  },
+  precheck_product_category(input, context) {
+    return callWechatApi(context, {
+      method: "POST",
+      path: "/channels/ec/product/categoryprecheck",
+      body: compactObject({
+        cat_id: input.catId === undefined ? undefined : positiveInteger(input.catId, "catId", providerInputError),
+      }),
+    });
+  },
+  get_category_product_rule(input, context) {
+    return callWechatApi(context, {
+      method: "POST",
+      path: "/shop/ec/category/getcategoryproductrule",
+      body: compactObject({
+        cat_id: positiveInteger(input.catId, "catId", providerInputError),
+        release_mode: optionalInteger(input.releaseMode),
+        brand_id:
+          input.brandId === undefined ? undefined : positiveInteger(input.brandId, "brandId", providerInputError),
+      }),
     });
   },
   list_valid_brands(input, context) {
@@ -302,7 +371,7 @@ const weixinStoreActionHandlers: ProviderActionHandlers<typeof service, WeixinSt
       path: "/channels/ec/aftersale/rejectapply",
       body: compactObject({
         after_sale_order_id: requiredInputString(input.afterSaleOrderId, "afterSaleOrderId"),
-        reject_reason_type: readPositiveInteger(input.rejectReasonType, "rejectReasonType"),
+        reject_reason_type: positiveInteger(input.rejectReasonType, "rejectReasonType", providerInputError),
         reject_reason: optionalString(input.rejectReason),
       }),
     });
@@ -347,8 +416,8 @@ async function uploadImageFile(
   context: WeixinStoreContext,
   input: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const width = readPositiveInteger(input.width, "width");
-  const height = readPositiveInteger(input.height, "height");
+  const width = positiveInteger(input.width, "width", providerInputError);
+  const height = positiveInteger(input.height, "height", providerInputError);
   const file = await readTransitFileInput(input.file, context);
   const formData = new FormData();
   formData.set("media", file.file, file.name);
@@ -418,6 +487,52 @@ async function executeWechatJsonRequest(
       return { status: response.status, record: parseWechatJson(rawText), rawText };
     },
   );
+}
+
+/**
+ * Build the category_info of a category application: force the certificate-group
+ * protocol and send every id as the number WeChat documents, since callers often
+ * copy them from responses that carry numeric ids as strings.
+ */
+function mapCategoryApplication(categoryInfo: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...categoryInfo,
+    cats_v2: objectArray(categoryInfo.cats_v2, "categoryInfo.cats_v2", providerInputError).map((cat) => ({
+      ...cat,
+      cat_id: positiveInteger(cat.cat_id, "categoryInfo.cats_v2[].cat_id", providerInputError),
+    })),
+    license_group_list: objectArray(
+      categoryInfo.license_group_list,
+      "categoryInfo.license_group_list",
+      providerInputError,
+    ).map((group) => {
+      const license = optionalRecord(group.license) ?? {};
+      return {
+        ...group,
+        license_group_id: positiveInteger(
+          group.license_group_id,
+          "categoryInfo.license_group_list[].license_group_id",
+          providerInputError,
+        ),
+        license: {
+          ...license,
+          license_id: positiveInteger(
+            license.license_id,
+            "categoryInfo.license_group_list[].license.license_id",
+            providerInputError,
+          ),
+        },
+      };
+    }),
+    brand_list:
+      categoryInfo.brand_list === undefined
+        ? undefined
+        : objectArray(categoryInfo.brand_list, "categoryInfo.brand_list", providerInputError).map((brand) => ({
+            ...brand,
+            brand_id: positiveInteger(brand.brand_id, "categoryInfo.brand_list[].brand_id", providerInputError),
+          })),
+    is_new_apply_cat: true,
+  };
 }
 
 /** WeChat only reads deliver_acct_type when deliver_method is 3, and then it is required. */
@@ -528,14 +643,6 @@ function readOffsetLimit(input: Record<string, unknown>): Record<string, unknown
 
 function readPageSize(input: Record<string, unknown>, max: number, defaultValue?: number): number | undefined {
   return readBoundedInteger(input.pageSize, "pageSize", 1, max) ?? defaultValue;
-}
-
-function readPositiveInteger(value: unknown, fieldName: string): number {
-  const parsed = optionalInteger(value);
-  if (parsed === undefined || parsed < 1) {
-    throw providerInputError(`${fieldName} must be a positive integer`);
-  }
-  return parsed;
 }
 
 /** Read a WeChat id that the docs type inconsistently as string or number; numbers are sent in string form. */
