@@ -809,6 +809,9 @@ describe("SqliteRuntimeDatabase", () => {
       allowedConnections: ["example:personal"],
     });
     await expect(tokens.resolveToken(created.token)).resolves.toMatchObject({
+      allowedActions: ["github.get_current_user"],
+      blockedActions: [],
+      allowedProxies: ["slack"],
       allowedConnections: ["example:personal"],
     });
 
@@ -817,6 +820,84 @@ describe("SqliteRuntimeDatabase", () => {
     await expect(tokens.verifyToken(created.token)).resolves.toBe(false);
     await expect(tokens.revokeToken(created.record.id)).resolves.toBe(false);
     database.close();
+  });
+
+  it("rebinds token lookups and last-use updates independently", async () => {
+    const database = new SqliteRuntimeDatabase(await createDatabasePath());
+    try {
+      const store = database.runtimeTokenStore;
+      const tokens = new RuntimeTokenService(store);
+      const first = await tokens.createToken("First");
+      const second = await tokens.createToken("Second");
+      const earlier = "2026-09-30T00:00:00.000Z";
+      const later = "2026-09-30T00:01:00.000Z";
+
+      await store.markUsed(first.record.id, earlier);
+      await store.markUsed(second.record.id, later);
+      await expect(store.findByHash(first.record.tokenHash)).resolves.toMatchObject({
+        id: first.record.id,
+        lastUsedAt: earlier,
+      });
+      await expect(store.findByHash("missing-hash")).resolves.toBeUndefined();
+      await expect(store.findByHash(second.record.tokenHash)).resolves.toMatchObject({
+        id: second.record.id,
+        lastUsedAt: later,
+      });
+      await store.markUsed(first.record.id, later);
+      await store.markUsed("missing-id", earlier);
+      await expect(store.findByHash(first.record.tokenHash)).resolves.toMatchObject({ lastUsedAt: later });
+      await expect(store.findByHash(second.record.tokenHash)).resolves.toMatchObject({ lastUsedAt: later });
+    } finally {
+      database.close();
+    }
+  });
+
+  it("observes token changes from another connection and after reopening", async () => {
+    const databasePath = await createDatabasePath();
+    const first = new SqliteRuntimeDatabase(databasePath);
+    let token: string;
+    let tokenId: string;
+    try {
+      const tokens = new RuntimeTokenService(first.runtimeTokenStore);
+      const created = await tokens.createToken("Shared");
+      token = created.token;
+      tokenId = created.record.id;
+      await expect(tokens.verifyToken(token)).resolves.toBe(true);
+
+      const second = new SqliteRuntimeDatabase(databasePath);
+      try {
+        const policy = {
+          allowedActions: ["github.*"],
+          blockedActions: ["github.delete_repository"],
+          allowedProxies: ["github"],
+          allowedConnections: ["example:work"],
+        };
+        await second.runtimeTokenStore.updatePolicy(tokenId, policy);
+        await expect(tokens.resolveToken(token)).resolves.toEqual({ tokenId, ...policy });
+      } finally {
+        second.close();
+      }
+    } finally {
+      first.close();
+    }
+
+    const reopened = new SqliteRuntimeDatabase(databasePath);
+    try {
+      const tokens = new RuntimeTokenService(reopened.runtimeTokenStore);
+      await expect(tokens.resolveToken(token)).resolves.toMatchObject({
+        tokenId,
+        allowedConnections: ["example:work"],
+      });
+      const writer = new SqliteRuntimeDatabase(databasePath);
+      try {
+        await writer.runtimeTokenStore.revoke(tokenId);
+        await expect(tokens.verifyToken(token)).resolves.toBe(false);
+      } finally {
+        writer.close();
+      }
+    } finally {
+      reopened.close();
+    }
   });
 
   it("defaults omitted allowedConnections to an unrestricted empty list", async () => {
