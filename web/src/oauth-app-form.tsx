@@ -6,6 +6,7 @@ import { ExternalLink, Settings, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { apiDelete, apiPut } from "./api";
 import { CredentialInput } from "./credential-input";
+import { OAuthSourceForm } from "./saas-project-settings";
 import { FormStatus } from "./shared-ui";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -27,32 +28,29 @@ interface OAuthAppDialogProps extends OAuthAppFormProps {
 
 export function OAuthAppDialog(props: OAuthAppDialogProps): ReactNode {
   const t = useTranslate();
-  const configured = props.config?.configured ?? false;
-
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
       <DialogContent className="max-h-[calc(100svh-2rem)] max-w-[min(560px,calc(100vw-2rem))] overflow-y-auto sm:max-w-[min(560px,calc(100vw-2rem))]">
         <DialogHeader>
-          <DialogTitle>
-            {t(configured ? "oauthApps.dialog.editTitle" : "oauthApps.dialog.configureTitle", {
-              name: props.provider.displayName,
-            })}
-          </DialogTitle>
-          <DialogDescription>
-            {props.auth.clientSetup
-              ? t("providers.oauthClientSettings.setupIntro", { name: props.provider.displayName })
-              : props.provider.service}
-          </DialogDescription>
+          <DialogTitle>{t("saas.settingsTitle", { name: props.provider.displayName })}</DialogTitle>
+          <DialogDescription>{t("saas.settingsDescription")}</DialogDescription>
         </DialogHeader>
-        <OAuthAppForm
-          provider={props.provider}
-          auth={props.auth}
+        <OAuthSourceForm
+          service={props.provider.service}
           config={props.config}
           onRefresh={props.onRefresh}
-          onSaved={() => {
-            props.onSaved?.();
-            props.onOpenChange(false);
-          }}
+          localConfiguration={
+            <OAuthAppForm
+              provider={props.provider}
+              auth={props.auth}
+              config={props.config}
+              onRefresh={props.onRefresh}
+              onSaved={() => {
+                props.onSaved?.();
+                props.onOpenChange(false);
+              }}
+            />
+          }
         />
       </DialogContent>
     </Dialog>

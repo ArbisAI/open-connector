@@ -47,7 +47,7 @@ import { TransitFileService } from "./files/transit-files.ts";
 import { AesGcmSecretCodec, PlainTextSecretCodec } from "./secrets/secret-codec.ts";
 import { decodeRunLogCursor, encodeRunLogCursor } from "./storage/runtime-store.ts";
 import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
-import { SqliteRuntimeDatabase } from "./storage/sqlite-runtime-store.ts";
+import { SqliteRuntimeDatabase } from "./storage/sqlite/runtime-store.ts";
 
 const apiKeyProvider: ProviderDefinition = {
   service: "example",
@@ -199,6 +199,23 @@ describe("ConnectServer", () => {
         message: "OAuth Catalog Only is not available in this runtime.",
       },
     });
+  });
+
+  it("starts configured Console OAuth without an admin token when runtime authentication is enabled", async () => {
+    const app = createTestServer([oauthProvider], { auth: { runtimeToken: "runtime-secret" } }).createApp();
+    const configured = await app.request("/api/oauth/configs/oauth_example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientId: "client", clientSecret: "secret" }),
+    });
+    expect(configured.status).toBe(200);
+    const response = await app.request("/api/oauth/authorizations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ service: "oauth_example", connectionName: "work" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ authorizationUrl: expect.stringContaining("client_id=client") });
   });
 
   it("starts console OAuth with a connection-scoped client", async () => {
@@ -4094,7 +4111,7 @@ class MemoryConnectionStore implements IConnectionStore {
     return this.store.get(createConnectionKey(service, connectionName));
   }
 
-  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+  async set(service: string, connectionName: string, credential: ResolvedCredential) {
     const key = createConnectionKey(service, connectionName);
     const connection = {
       id: this.store.get(key)?.id ?? crypto.randomUUID(),
