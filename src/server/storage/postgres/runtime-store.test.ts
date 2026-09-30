@@ -3,14 +3,16 @@ import type { MigrationSource } from "../migration-source.ts";
 
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
-import { Pool } from "pg";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { setTimeout } from "node:timers/promises";
+import { Client, Pool } from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AesGcmSecretCodec } from "../../secrets/secret-codec.ts";
 import { connectionRequestStoreTests } from "../connection-request-store.cases.ts";
 import { defaultMigrationSource } from "../migration-source.ts";
 import { createNodeRuntimeDatabase, migratePostgresRuntimeDatabase } from "../node-runtime-database.ts";
 import { RuntimeTokenService } from "../runtime-token-service.ts";
 import { saasProjectStoreTests, saasMaintenanceTests } from "../saas-project-store.cases.ts";
+import { triggerStoreTests } from "../trigger-store.cases.ts";
 import { assertPostgresSchemaReady, migratePostgresDatabase } from "./migrations.ts";
 import { PostgresRuntimeDatabase } from "./runtime-store.ts";
 
@@ -25,6 +27,50 @@ interface PGliteTestServer {
   server: PGLiteSocketServer;
   url: string;
 }
+
+describe("PGlite PostgreSQL protocol fixture", () => {
+  let testServer: PGliteTestServer;
+
+  beforeAll(async () => {
+    testServer = await startPGliteTestServer();
+  });
+
+  afterAll(async () => {
+    await testServer.server.stop();
+    await testServer.database.close();
+  });
+
+  it.each([
+    { phase: "Parse", sql: "select * from missing_table where id = $1", code: "42P01" },
+    { phase: "Execute", sql: "select 1 / $1::integer", code: "22012" },
+  ])("recovers on the same connection after a $phase error and delayed Sync", async ({ sql, code }) => {
+    const execute = testServer.database.execProtocolRawStream.bind(testServer.database);
+    const delayedSync = vi
+      .spyOn(testServer.database, "execProtocolRawStream")
+      .mockImplementation(async (message, options) => {
+        if (message[0] === "S".charCodeAt(0)) await setTimeout(20);
+        await execute(message, options);
+      });
+    const client = new Client({ connectionString: testServer.url });
+    const connectionErrors: Error[] = [];
+    client.on("error", (error) => connectionErrors.push(error));
+    try {
+      await client.connect();
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await client.query("begin");
+        await expect(client.query(sql, [0])).rejects.toMatchObject({ code });
+        await client.query("rollback");
+        await expect(client.query("select $1::integer as value", [attempt])).resolves.toMatchObject({
+          rows: [{ value: attempt }],
+        });
+      }
+      expect(connectionErrors).toEqual([]);
+    } finally {
+      delayedSync.mockRestore();
+      await client.end();
+    }
+  });
+});
 
 describe("PostgreSQL migrations with PGlite", () => {
   let testServer: PGliteTestServer;
@@ -56,6 +102,8 @@ describe("PostgreSQL migrations with PGlite", () => {
           { name: "0013_connection_requests.sql" },
           { name: "0014_saas_project.sql" },
           { name: "0015_saas_cleanup_runtime.sql" },
+          { name: "0016_trigger_policy.sql" },
+          { name: "0017_trigger_subscriptions.sql" },
         ],
       });
 
@@ -117,6 +165,8 @@ describe("PostgreSQL migrations with a custom migration source", () => {
           { name: "0013_connection_requests.sql" },
           { name: "0014_saas_project.sql" },
           { name: "0015_saas_cleanup_runtime.sql" },
+          { name: "0016_trigger_policy.sql" },
+          { name: "0017_trigger_subscriptions.sql" },
           { name: "9998_custom.sql" },
         ],
       });
@@ -203,6 +253,7 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
   });
 
   connectionRequestStoreTests(() => database);
+  triggerStoreTests(() => database);
 
   it("persists connections and OAuth data across database instances", async () => {
     const connection = await database.connectionStore.set("github", "default", githubCredential("github-token"));
@@ -420,7 +471,29 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
     database = await PostgresRuntimeDatabase.open(testServer.url, {
       secretCodec: new AesGcmSecretCodec("old-key"),
     });
-    await database.connectionStore.set("github", "default", githubCredential("github-token"));
+    const connection = await database.connectionStore.set("github", "default", githubCredential("github-token"));
+    const token = await new RuntimeTokenService(database.runtimeTokenStore).createToken("trigger-owner");
+    const triggerRecord = {
+      id: "rotation-trigger",
+      mode: "webhook" as const,
+      tokenId: token.record.id,
+      service: "github",
+      connectionId: connection.id,
+      connectionRevision: connection.revision,
+      providerAccountId: githubProfile.accountId,
+      triggerId: "github.on_repo_event",
+      requestKey: "binding",
+      config: { owner: "octocat", repo: "repository" },
+      endpointUrl: "https://callback.example/hook",
+      callbackNonce: "rotation-nonce",
+      callbackSecret: "private-trigger-secret",
+      checkpoint: null,
+      subscription: { hookId: "private-hook" },
+      reconcileAt: 1_000,
+      status: "active" as const,
+    };
+    await database.triggerStore.insertFlowTrigger(triggerRecord);
+
     await database.oauthClientConfigStore.set({
       service: "gmail",
       clientId: "client-id",
@@ -449,6 +522,7 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
       secretCodec: new AesGcmSecretCodec("old-key"),
     });
     await expect(withOldKey.connectionStore.get("github", "default")).rejects.toThrow();
+    await expect(withOldKey.triggerStore.getFlowTrigger(triggerRecord.id)).rejects.toThrow();
     await withOldKey.close();
 
     database = await PostgresRuntimeDatabase.open(testServer.url, {
@@ -457,6 +531,7 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
     await expect(database.connectionStore.get("github", "default")).resolves.toMatchObject({
       credential: { apiKey: "github-token" },
     });
+    await expect(database.triggerStore.getFlowTrigger(triggerRecord.id)).resolves.toEqual(triggerRecord);
     await expect(database.oauthClientConfigStore.get("gmail")).resolves.toMatchObject({
       clientSecret: "client-secret",
     });
@@ -470,6 +545,7 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
 
     await database.resetRuntimeData();
     await expect(database.connectionStore.list()).resolves.toEqual([]);
+    await expect(database.triggerStore.list()).resolves.toEqual([]);
     const pool = new Pool({ connectionString: testServer.url, max: 1 });
     try {
       await expect(assertPostgresSchemaReady(pool)).resolves.toBeUndefined();
@@ -481,6 +557,19 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
 
 async function startPGliteTestServer(): Promise<PGliteTestServer> {
   const database = await PGlite.create();
+  // PGlite sends ReadyForQuery before Sync after extended-query errors: https://github.com/electric-sql/pglite/issues/958
+  database.execProtocolRawStream = async (message, { syncToFs, onRawData }) => {
+    const response = Buffer.from(await database.execProtocolRaw(message, { syncToFs }));
+    if (message[0] === 0 || message[0] === "Q".charCodeAt(0) || message[0] === "S".charCodeAt(0)) {
+      onRawData(response);
+      return;
+    }
+    for (let offset = 0; offset < response.length; ) {
+      const end = offset + response.readUInt32BE(offset + 1) + 1;
+      if (response[offset] !== "Z".charCodeAt(0)) onRawData(response.subarray(offset, end));
+      offset = end;
+    }
+  };
   const server = new PGLiteSocketServer({
     db: database,
     host: "127.0.0.1",
