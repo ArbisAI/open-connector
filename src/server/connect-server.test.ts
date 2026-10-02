@@ -704,9 +704,29 @@ describe("ConnectServer", () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ connectionName: "work", configured: false });
+    // Without `revoke: true` the delete leaves the provider's grant alone, as it always has.
+    await expect(response.json()).resolves.toMatchObject({
+      connectionName: "work",
+      configured: false,
+      revoked: "skipped",
+    });
     const connections = (await (await app.request("/api/connections")).json()) as Array<{ connectionName: string }>;
     expect(connections.map((connection) => connection.connectionName)).toEqual(["default"]);
+
+    // `revoke: true` asks for the grant to end; a provider that declares no revocation endpoint
+    // cannot, and says so, while the delete still happens.
+    const asked = await app.request("/api/connections/example", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ connectionName: "default", revoke: true }),
+    });
+    expect(asked.status).toBe(200);
+    await expect(asked.json()).resolves.toMatchObject({
+      connectionName: "default",
+      configured: false,
+      revoked: "unsupported",
+    });
+    expect(await (await app.request("/api/connections")).json()).toEqual([]);
   });
 
   it("rejects JSON request bodies that are not objects", async () => {

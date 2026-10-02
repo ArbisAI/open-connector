@@ -26,6 +26,7 @@ import { ConnectionError, defaultConnectionName } from "../connection-service.ts
 import { ActionPolicyService, emptyPolicyRules } from "../core/action-policy.ts";
 import { DEFAULT_ACTION_SEARCH_LIMIT, createActionSearchIndexProvider, searchActions } from "../core/action-search.ts";
 import {
+  optionalBoolean,
   optionalRecord,
   optionalString,
   requiredRawString,
@@ -1191,7 +1192,7 @@ export class ConnectServer {
     this.options.logger?.info(logContext, "connection disconnect started");
     return this.writeConnectionResult(
       context,
-      this.options.connections.disconnect(service, connectionName),
+      this.options.connections.disconnect(service, connectionName, { revoke: optionalBoolean(body.revoke) }),
       logContext,
     );
   }
