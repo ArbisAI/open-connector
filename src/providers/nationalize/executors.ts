@@ -87,12 +87,7 @@ async function requestNationalize(
     const error = optionalString(optionalRecord(payload)?.error);
     if (!response.ok || error) {
       if (response.status === 401 && error === "Invalid API key") {
-        throw new ProviderRequestError(
-          validating ? 400 : 401,
-          "Nationalize: Invalid API key",
-          undefined,
-          validating ? "invalid_input" : "credential_expired",
-        );
+        throw new ProviderRequestError(validating ? 400 : 401, "Nationalize: Invalid API key");
       }
       throw new ProviderRequestError(
         response.ok ? 502 : response.status,

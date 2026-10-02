@@ -298,7 +298,7 @@ function mapResponseError(error: Record<string, unknown>, status: number, phase:
   if (code === "105") {
     return phase === "validate"
       ? new ProviderRequestError(400, message, undefined, "invalid_input")
-      : new ProviderRequestError(401, message, undefined, "credential_expired");
+      : new ProviderRequestError(401, message);
   }
   if (code === "110" || status === 429) {
     return new ProviderRequestError(429, message, undefined, "rate_limited");

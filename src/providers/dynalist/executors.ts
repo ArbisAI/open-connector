@@ -78,12 +78,7 @@ async function requestDynalist(
     const code = optionalString(payload?._code);
     const message = optionalString(payload?._msg);
     if (code === "InvalidToken") {
-      throw new ProviderRequestError(
-        validating ? 400 : 401,
-        message || "Dynalist API secret token is invalid",
-        undefined,
-        validating ? "invalid_input" : "credential_expired",
-      );
+      throw new ProviderRequestError(validating ? 400 : 401, message || "Dynalist API secret token is invalid");
     }
     if (!response.ok || code !== "OK") {
       throw new ProviderRequestError(
