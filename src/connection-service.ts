@@ -1,4 +1,5 @@
 import type { CatalogStore, RuntimeProviderDefinition } from "./catalog-store.ts";
+import type { ProviderHttpDispatchOptions } from "./core/provider-http-dispatch.ts";
 import type {
   ApiKeyAuthDefinition,
   AuthType,
@@ -17,7 +18,11 @@ import type { IProviderLoader } from "./providers/provider-loader.ts";
 
 import { normalizeCredentialValues } from "./core/credential-fields.ts";
 import { apiKeyCredentialFields } from "./core/provider-setup.ts";
-import { providerFetch } from "./providers/provider-runtime.ts";
+import {
+  providerFetch,
+  ProviderDispatchRequestError,
+  withProviderHttpDispatchResult,
+} from "./providers/provider-runtime.ts";
 
 export const defaultConnectionName = "default";
 const connectionNamePattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
@@ -59,6 +64,7 @@ export interface ConnectWithoutAuthInput {
 }
 
 export interface ConnectionServiceOptions {
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   catalog: CatalogStore;
   oauthCredentials?: IOAuthCredentialRefresher;
   providerLoader: IProviderLoader;
@@ -177,6 +183,7 @@ type OAuthCredential = Extract<ResolvedCredential, { authType: "oauth2" }>;
  * run public actions without configuration.
  */
 export class ConnectionService {
+  private readonly providerHttpDispatch?: ProviderHttpDispatchOptions;
   private readonly catalog: CatalogStore;
   private readonly oauthCredentialRefreshes = new Map<string, Promise<OAuthCredential>>();
   private readonly oauthCredentials?: IOAuthCredentialRefresher;
@@ -186,6 +193,7 @@ export class ConnectionService {
   private readonly marketplace?: MarketplaceService;
 
   constructor(input: ConnectionServiceOptions) {
+    this.providerHttpDispatch = input.providerHttpDispatch;
     this.catalog = input.catalog;
     this.oauthCredentials = input.oauthCredentials;
     this.providerLoader = input.providerLoader;
@@ -872,7 +880,11 @@ export class ConnectionService {
     refresher: IOAuthCredentialRefresher,
   ): Promise<OAuthCredential> {
     const { id, revision, service, connectionName } = connection;
-    const nextCredential = await refresher.refresh(service, credential);
+    const nextCredential = await withProviderHttpDispatchResult(
+      { operation: "oauth", service, connectionId: id, connectionName },
+      () => refresher.refresh(service, credential),
+      this.providerHttpDispatch,
+    );
     const updated = await this.store.updateCredential(
       {
         id,
@@ -899,13 +911,19 @@ export class ConnectionService {
   ): Promise<CredentialValidationResult> {
     this.assertNotCancelled(signal);
     try {
-      const result = (await validate()) ?? {};
+      const result =
+        (await withProviderHttpDispatchResult(
+          { operation: "credential_validation", service },
+          validate,
+          this.providerHttpDispatch,
+        )) ?? {};
       this.assertNotCancelled(signal);
       return result;
     } catch (error) {
       if (signal?.aborted) {
         throw cancelledConnectionError();
       }
+      if (error instanceof ProviderDispatchRequestError) throw error;
       throw new ConnectionError(
         "credential_verification_failed",
         error instanceof Error ? error.message : `${service} credential verification failed.`,

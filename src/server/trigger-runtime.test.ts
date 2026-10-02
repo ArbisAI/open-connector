@@ -1,3 +1,5 @@
+import type { IConnectionStore } from "../connection-service.ts";
+import type { ProviderHttpAttempt } from "../core/provider-http-dispatch.ts";
 import type { ProviderDefinition, ProviderProxyExecutor } from "../core/types.ts";
 import type { ConnectorProxyRequest } from "../triggers/common/proxy.ts";
 import type { ConnectApp } from "./connect-app.ts";
@@ -5,12 +7,14 @@ import type { ConnectApp } from "./connect-app.ts";
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../catalog-store.ts";
+import { ConnectionService } from "../connection-service.ts";
 import { ActionPolicyService } from "../core/action-policy.ts";
 import { provider as feishu } from "../providers/feishu_app_bot/definition.ts";
 import { provider as github } from "../providers/github/definition.ts";
 import { provider as gmail } from "../providers/gmail/definition.ts";
 import { provider as linear } from "../providers/linear/definition.ts";
 import { ProviderLoader } from "../providers/provider-loader.ts";
+import { TriggerRunner } from "../triggers/trigger-runner.ts";
 import { createConnectApp } from "./connect-app.ts";
 import { TransitFileService } from "./files/transit-files.ts";
 import { PlainTextSecretCodec } from "./secrets/secret-codec-core.ts";
@@ -29,6 +33,10 @@ let hooks: Record<string, unknown>[];
 let nextId: number;
 let failDelete: boolean;
 let loseCreate: boolean;
+let useNativeProxy: boolean;
+let denyProviderDispatch: boolean;
+let dispatchAttempts: ProviderHttpAttempt[];
+let fixtureProviderLoader: ProviderLoader;
 
 beforeEach(async () => {
   database = new SqliteRuntimeDatabase(":memory:");
@@ -37,6 +45,9 @@ beforeEach(async () => {
   nextId = 1;
   failDelete = false;
   loseCreate = false;
+  useNativeProxy = false;
+  denyProviderDispatch = false;
+  dispatchAttempts = [];
   const sources: ProviderDefinition[] = [github, gmail, linear, feishu];
   const modulePaths: Record<string, string> = {
     github: "../providers/github/executors.ts",
@@ -49,10 +60,16 @@ beforeEach(async () => {
       provider.service,
       async () => {
         const native = await import(modulePaths[provider.service]!);
+        if (useNativeProxy) return native;
         const proxy: ProviderProxyExecutor = async (request, context) => {
           context.signal?.throwIfAborted();
           const credential = await context.getCredential(provider.service);
-          const key = credential?.authType === "api_key" ? credential.apiKey : "unknown";
+          const key =
+            credential?.authType === "api_key"
+              ? credential.apiKey
+              : credential?.authType === "oauth2"
+                ? credential.accessToken
+                : "unknown";
           calls.push({ service: provider.service, key, request: request as ConnectorProxyRequest });
           let data: unknown = {};
           let status = 200;
@@ -122,9 +139,16 @@ beforeEach(async () => {
   });
   token = created.token;
   tokenId = created.record.id;
+  fixtureProviderLoader = new ProviderLoader(modules);
   connector = await createConnectApp({
+    providerHttpDispatch: {
+      beforeAttempt: (attempt) => {
+        dispatchAttempts.push(attempt);
+        return denyProviderDispatch ? { allow: false, retryAfterSeconds: 46 } : { allow: true };
+      },
+    },
     catalog: createCatalogStore(sources),
-    providerLoader: new ProviderLoader(modules),
+    providerLoader: fixtureProviderLoader,
     runtimeDatabase: database,
     transitFiles: new TransitFileService({
       rootDir: "/unused-trigger-test",
@@ -146,6 +170,7 @@ afterEach(async () => {
   await connector.saasCleanup.close();
   database.close();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function credential(key: string, accountId: string) {
@@ -180,6 +205,82 @@ async function subscription() {
 }
 
 describe("Trigger runtime HTTP boundary", () => {
+  it("retains Trigger OAuth refresh with a boolean-only custom connection store and admission configured", async () => {
+    const sql = database.connectionStore;
+    const store: IConnectionStore = {
+      get: sql.get.bind(sql),
+      set: sql.set.bind(sql),
+      updateCredential: sql.updateCredential.bind(sql),
+      delete: sql.delete.bind(sql),
+      list: sql.list.bind(sql),
+    };
+    const oauth = {
+      authType: "oauth2" as const,
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      tokenType: "Bearer",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      profile: credential("unused", "work-account").profile,
+      metadata: { providerAccountVerified: true },
+    };
+    await store.set("github", "work", oauth);
+    const catalog = createCatalogStore([github]);
+    const providerHttpDispatch = { beforeAttempt: () => ({ allow: true as const }) };
+    const connections = new ConnectionService({
+      providerHttpDispatch,
+      catalog,
+      store,
+      providerLoader: fixtureProviderLoader,
+      oauthCredentials: {
+        refresh: async () => ({ ...oauth, accessToken: "fresh-token", expiresAt: "2099-01-01T00:00:00.000Z" }),
+      },
+    });
+    const runner = new TriggerRunner({
+      providerHttpDispatch,
+      catalog,
+      connections,
+      providerLoader: fixtureProviderLoader,
+      store: database.triggerStore,
+    });
+    await expect(
+      runner.run({
+        service: "github",
+        triggerId: "github.on_repo_event",
+        connectionId,
+        policy: new ActionPolicyService().createSnapshot(),
+        grant: {
+          tokenId,
+          allowedActions: [],
+          blockedActions: [],
+          allowedProxies: [],
+          allowedTriggers: ["github.on_repo_event"],
+        },
+        request: { operation: "reconcile", config, endpointUrl: callback, active: true, requestKey: "legacy-refresh" },
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ subscription: { id: expect.any(String) } });
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.key === "fresh-token")).toBe(true);
+  });
+
+  it("preserves admission denial through native Trigger proxy and integration error mapping", async () => {
+    useNativeProxy = true;
+    denyProviderDispatch = true;
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    const response = await request(reconcile());
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("46");
+    expect(await response.json()).toMatchObject({ errorCode: "rate_limited" });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(dispatchAttempts).toHaveLength(1);
+    expect(dispatchAttempts[0]?.context).toMatchObject({
+      operation: "trigger",
+      connectionId,
+      connectionName: "work",
+    });
+  });
+
   it("runs Trigger-only grants against the stable non-default connection and denies Action and public proxy", async () => {
     await subscription();
     expect(calls.every((call) => call.key === "work-key")).toBe(true);

@@ -1,7 +1,9 @@
 import type { IConnectionStore, StoredConnection } from "./connection-service.ts";
+import type { ProviderHttpAttempt, ProviderHttpDispatchOptions } from "./core/provider-http-dispatch.ts";
 import type { ActionExecutor, CredentialValidators, ProviderDefinition, ResolvedCredential } from "./core/types.ts";
 import type { MarketplaceService } from "./marketplace/marketplace-service.ts";
 import type { OAuthClientConfig } from "./oauth/oauth-client-config-service.ts";
+import type { IOAuthCredentialRefresher } from "./oauth/oauth-credential-refresh-service.ts";
 import type { IProviderLoader } from "./providers/provider-loader.ts";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -824,6 +826,87 @@ describe("ConnectionService", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it("binds OAuth refresh to the resolved stored connection identity", async () => {
+    const store = new MemoryConnectionStore();
+    const oauthClientConfigs = createOAuthClientConfigs([oauthProvider]);
+    const attempts: ProviderHttpAttempt[] = [];
+    const service = createService([oauthProvider], {
+      oauthCredentials: new OAuthCredentialRefreshService(oauthClientConfigs),
+      store,
+      providerHttpDispatch: {
+        beforeAttempt: (attempt) => {
+          attempts.push(attempt);
+          return { allow: true };
+        },
+      },
+    });
+    await oauthClientConfigs.upsertConfig({
+      service: "example",
+      clientId: "client-id",
+      clientSecret: "client-secret",
+    });
+    const original = await store.set("example", "binding-fixture", {
+      authType: "oauth2",
+      accessToken: "expired-token",
+      tokenType: "Bearer",
+      refreshToken: "refresh-token",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      profile: testProfile,
+      metadata: {},
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ access_token: "fresh-token", expires_in: 3600, token_type: "Bearer" })),
+    );
+    const target = await service.resolveForExecution("example", undefined, original.id);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]?.context).toMatchObject({
+      operation: "oauth",
+      service: "example",
+      connectionId: original.id,
+      connectionName: "binding-fixture",
+    });
+    if (target.kind !== "local") throw new Error("Expected local connection");
+    await expect(target.getCredential("example")).resolves.toMatchObject({ accessToken: "fresh-token" });
+    expect(JSON.stringify(attempts)).not.toMatch(/expired-token|refresh-token|client-secret/);
+  });
+
+  it("keeps boolean-only adapter OAuth refresh working with admission configured", async () => {
+    const memory = new MemoryConnectionStore();
+    const store: IConnectionStore = {
+      get: memory.get.bind(memory),
+      set: memory.set.bind(memory),
+      updateCredential: memory.updateCredential.bind(memory),
+      delete: memory.delete.bind(memory),
+      list: memory.list.bind(memory),
+    };
+    const expired = {
+      authType: "oauth2" as const,
+      accessToken: "expired-token",
+      tokenType: "Bearer",
+      refreshToken: "refresh-token",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+      profile: testProfile,
+      metadata: {},
+    };
+    const refresh = vi.fn(async () => ({ ...expired, accessToken: "fresh-token" }));
+    await store.set("example", "default", expired);
+    await expect(
+      createService([oauthProvider], { store, oauthCredentials: { refresh } }).getCredential("example"),
+    ).resolves.toMatchObject({ accessToken: "fresh-token" });
+    expect(refresh).toHaveBeenCalledOnce();
+    await store.set("example", "default", expired);
+    const guarded = createService([oauthProvider], {
+      store,
+      oauthCredentials: { refresh },
+      providerHttpDispatch: { beforeAttempt: () => ({ allow: true }) },
+    });
+    const target = await guarded.resolveForExecution("example");
+    if (target.kind !== "local") throw new Error("Expected local connection");
+    await expect(target.getCredential("example")).resolves.toMatchObject({ accessToken: "fresh-token" });
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
   it("does not overwrite a connection recreated during OAuth refresh", async () => {
     const store = new MemoryConnectionStore();
     const oauthClientConfigs = createOAuthClientConfigs([oauthProvider]);
@@ -1068,6 +1151,26 @@ describe("ConnectionService", () => {
       apiKey: "original-key",
       profile: { accountId: "example-account" },
     });
+  });
+
+  it("preserves mutable execution credentials when admission is configured", async () => {
+    const store = new MemoryConnectionStore();
+    const credential = {
+      authType: "api_key" as const,
+      apiKey: "original-key",
+      values: { apiKey: "original-key" },
+      profile: testProfile,
+      metadata: {},
+    };
+    await store.set("uptimerobot", "default", credential);
+    const target = await createService([apiKeyProvider], {
+      store,
+      providerHttpDispatch: { beforeAttempt: () => ({ allow: true }) },
+    }).resolveForExecution("uptimerobot");
+    if (target.kind !== "local") throw new Error("Expected local connection");
+    expect(await target.getCredential("uptimerobot")).toBe(credential);
+    credential.apiKey = "updated-key";
+    await expect(target.getCredential("uptimerobot")).resolves.toMatchObject({ apiKey: "updated-key" });
   });
 
   it("resolves each service credential once per forConnection scope", async () => {
@@ -1355,16 +1458,18 @@ describe("ConnectionService disconnect revocation", () => {
 });
 
 interface CreateServiceOptions {
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   logger?: ReturnType<typeof createTestLogger>;
-  oauthCredentials?: OAuthCredentialRefreshService;
+  oauthCredentials?: IOAuthCredentialRefresher;
   providerLoader?: IProviderLoader;
-  store?: MemoryConnectionStore;
+  store?: IConnectionStore;
 }
 
 function createService(providers: ProviderDefinition[], options: CreateServiceOptions = {}): ConnectionService {
   const catalog = createCatalogStore(providers);
 
   return new ConnectionService({
+    providerHttpDispatch: options.providerHttpDispatch,
     catalog,
     logger: options.logger,
     oauthCredentials: options.oauthCredentials,

@@ -2,6 +2,7 @@ import type { CatalogStore, RuntimeActionDefinition } from "../catalog-store.ts"
 import type { ConnectionService, ConnectionSummary } from "../connection-service.ts";
 import type { ActionPolicySnapshot } from "../core/action-policy.ts";
 import type { ActionSearchDocument, ActionSearchIndexProvider } from "../core/action-search.ts";
+import type { ProviderHttpDispatchOptions } from "../core/provider-http-dispatch.ts";
 import type { RuntimeLogger, TransitFileUpload } from "../core/types.ts";
 import type { MarketplaceConfigInput, MarketplaceService } from "../marketplace/marketplace-service.ts";
 import type { OAuthClientConfigInput } from "../oauth/oauth-client-config-service.ts";
@@ -34,9 +35,11 @@ import {
   requiredStringArray,
 } from "../core/cast.ts";
 import { PromiseCache } from "../core/promise-cache.ts";
+import { withProviderHttpDispatch } from "../core/provider-http-dispatch.ts";
 import { MarketplaceError } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigError, OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthCallbackError, OAuthFlowError, OAuthFlowService } from "../oauth/oauth-flow-service.ts";
+import { ProviderDispatchRequestError, toProviderExecutionError } from "../providers/provider-runtime.ts";
 import { SaasError } from "../saas/saas-client.ts";
 import {
   ActionInputDepthError,
@@ -123,6 +126,7 @@ export async function preloadOptionalServerModules(): Promise<void> {
  * Dependencies required to construct the local connector server.
  */
 export interface IConnectServerOptions {
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   catalog: CatalogStore;
   /** Public origin of this runtime, used for the HTTP request examples in Action guides. */
   publicOrigin: string;
@@ -167,6 +171,7 @@ export class ConnectServer {
     this.actionSearch = options.actionSearch ?? createActionSearchIndexProvider(options.catalog.actions);
     this.actionPolicy = options.actionPolicy ?? new ActionPolicyService();
     this.proxyRunner = new ProxyRunner({
+      providerHttpDispatch: options.providerHttpDispatch,
       catalog: options.catalog,
       providerLoader: options.providerLoader,
       connections: options.connections,
@@ -178,6 +183,10 @@ export class ConnectServer {
   createApp(): Hono {
     const app = new Hono();
     const auth = this.options.auth ?? {};
+
+    app.use("*", async (_context, next) => {
+      await withProviderHttpDispatch({ operation: "runtime" }, next, this.options.providerHttpDispatch);
+    });
 
     app.use("*", async (context, next) => {
       await next();
@@ -410,6 +419,14 @@ export class ConnectServer {
     if (this.options.registerStaticRoutes) this.options.registerStaticRoutes(app);
     else app.notFound(notFound);
     app.onError((error, context) => {
+      if (error instanceof ProviderDispatchRequestError) {
+        return writeRuntimeFailure(context, {
+          status: 429,
+          errorCode: "rate_limited",
+          message: error.message,
+          data: toProviderExecutionError(error, error.message).error?.details,
+        });
+      }
       if (error instanceof SaasError) {
         this.options.logger?.warn(
           {

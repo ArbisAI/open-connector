@@ -1,6 +1,7 @@
 import type { CatalogStore } from "../catalog-store.ts";
 import type { ConnectionService } from "../connection-service.ts";
 import type { ActionPolicySnapshot } from "../core/action-policy.ts";
+import type { ProviderHttpDispatchOptions } from "../core/provider-http-dispatch.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { RuntimeGrant } from "../server/storage/runtime-token-service.ts";
 import type { IntegrationDefinition } from "./common/integration.ts";
@@ -11,6 +12,8 @@ import type { TriggerSubscription, TriggerStore } from "./store.ts";
 
 import { ConnectionError } from "../connection-service.ts";
 import { optionalInteger, optionalRecord } from "../core/cast.ts";
+import { withProviderHttpDispatch } from "../core/provider-http-dispatch.ts";
+import { withProviderHttpDispatchResult } from "../providers/provider-runtime.ts";
 import { HttpRequestError } from "../server/api/http-utils.ts";
 import { mapConnectionErrorStatus } from "../server/api/runtime-api.ts";
 import { resolveTriggerConfig } from "./common/config.ts";
@@ -23,6 +26,7 @@ import {
 import { executeSubscription, executeSubscriptionOperation } from "./subscriptions.ts";
 
 interface TriggerRunnerOptions {
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
   connections: ConnectionService;
@@ -46,6 +50,15 @@ export class TriggerRunner {
   }
 
   async run(input: RunTriggerInput): Promise<unknown> {
+    const provider = this.options.catalog.providers.find((candidate) => candidate.service === input.service);
+    return withProviderHttpDispatch(
+      { operation: "trigger", service: provider?.service },
+      () => this.runTrigger(input),
+      this.options.providerHttpDispatch,
+    );
+  }
+
+  private async runTrigger(input: RunTriggerInput): Promise<unknown> {
     const decision = input.policy.evaluateTrigger(input.triggerId);
     if (!decision.allowed) throw new HttpRequestError(decision.code, decision.message, 403);
     const stateful = input.request.operation !== "read" && input.request.operation !== "options";
@@ -67,7 +80,7 @@ export class TriggerRunner {
     if (request.operation === "receive") {
       if (definition.snapshot.type !== "integration" || ("eventSource" in definition && definition.eventSource))
         throw new HttpRequestError("invalid_input", "This Trigger has no remote webhook.");
-      return this.providerOperation(() =>
+      return this.providerOperation(input.service, () =>
         executeSubscription(
           this.options.store,
           definition as IntegrationDefinition,
@@ -84,7 +97,7 @@ export class TriggerRunner {
       request.operation === "options",
     );
     const context = { config, connector: target.proxy, now: new Date(), signal: input.signal };
-    return this.providerOperation(async () => {
+    return this.providerOperation(input.service, async () => {
       switch (request.operation) {
         case "options": {
           if (
@@ -142,7 +155,7 @@ export class TriggerRunner {
     if (record.mode === "resource") {
       if (!(definition as IntegrationDefinition).resources)
         throw new HttpRequestError("trigger_not_supported", "Resource subscriptions are unavailable.", 501);
-      await this.providerOperation(() =>
+      await this.providerOperation(record.service, () =>
         executeResourceSubscriptionOperation(
           this.options.store,
           (definition as IntegrationDefinition).resources!,
@@ -156,7 +169,7 @@ export class TriggerRunner {
     } else {
       if (definition.snapshot.type !== "integration")
         throw new HttpRequestError("trigger_not_found", "The remote Trigger definition is unavailable.", 404);
-      await this.providerOperation(() =>
+      await this.providerOperation(record.service, () =>
         executeSubscriptionOperation(
           record,
           save,
@@ -234,10 +247,20 @@ export class TriggerRunner {
       const proxy: ConnectorProxy = {
         execute: async (request, requestSignal) => {
           signal.throwIfAborted();
-          const result = await executor(request, {
-            getCredential: target.getCredential,
-            signal: requestSignal ?? signal,
-          });
+          const result = await withProviderHttpDispatch(
+            {
+              operation: "trigger",
+              service,
+              connectionId: stored.id,
+              connectionName: stored.connectionName,
+            },
+            () =>
+              executor(request, {
+                getCredential: target.getCredential,
+                signal: requestSignal ?? signal,
+              }),
+            this.options.providerHttpDispatch,
+          );
           if (result.ok) return result.response;
           const status = optionalInteger(optionalRecord(result.error.details)?.status) ?? 502;
           return { status, data: { error: result.error.message } };
@@ -259,7 +282,15 @@ export class TriggerRunner {
     }
   }
 
-  private async providerOperation<T>(run: () => Promise<T>): Promise<T> {
+  private async providerOperation<T>(service: string, run: () => Promise<T>): Promise<T> {
+    return withProviderHttpDispatchResult(
+      { operation: "trigger", service },
+      () => this.runProviderOperation(run),
+      this.options.providerHttpDispatch,
+    );
+  }
+
+  private async runProviderOperation<T>(run: () => Promise<T>): Promise<T> {
     try {
       return await run();
     } catch (error) {
