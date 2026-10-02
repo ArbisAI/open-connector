@@ -1,6 +1,5 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext, ProviderActionHandlers } from "../provider-runtime.ts";
 
 import { compactObject, looseArray, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
@@ -157,14 +156,7 @@ async function assertCheaperinferenceResponse(response: Response, mode: "validat
   if (mode === "validate" && (response.status === 401 || response.status === 403)) {
     throw new ProviderRequestError(400, error.message, error);
   }
-  if (mode === "execute" && response.status === 401) {
-    throw new ProviderRequestError(401, error.message, error);
-  }
-  if (response.status === 400 || response.status === 404 || response.status === 413 || response.status === 422) {
-    throw new ProviderRequestError(400, error.message, error);
-  }
-
-  throw new ProviderRequestError(response.status || 502, error.message, error);
+  throw new ProviderRequestError(response.status || 502, error.message, error, "provider_error");
 }
 
 async function readCheaperinferenceError(response: Response): Promise<{
@@ -172,8 +164,7 @@ async function readCheaperinferenceError(response: Response): Promise<{
   code?: string | number;
   message: string;
 }> {
-  const rawText =
-    (await response.text().catch(() => "")) || `${requestLabel} request failed with status ${response.status}`;
+  const rawText = (await response.text()) || `${requestLabel} request failed with status ${response.status}`;
 
   try {
     const payload = JSON.parse(rawText) as Record<string, unknown>;

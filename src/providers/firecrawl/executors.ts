@@ -360,7 +360,12 @@ function createFirecrawlError(status: number, payload: unknown, phase: Firecrawl
     return new ProviderRequestError(status, message, payload);
   }
   if (status === 401 || status === 403) {
-    return new ProviderRequestError(phase === "validate" ? 400 : 401, message, payload);
+    return new ProviderRequestError(
+      phase === "validate" ? 400 : status,
+      message,
+      payload,
+      phase === "validate" ? "invalid_input" : "provider_error",
+    );
   }
   if (status === 429) {
     return new ProviderRequestError(429, message, payload);

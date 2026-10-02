@@ -5,20 +5,19 @@ import type {
   ProviderExecutors,
   ProviderProxyExecutor,
 } from "../../core/types.ts";
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
-import type { ApiKeyProviderContext } from "../provider-runtime.ts";
+import type { ApiKeyProviderContext, ProviderActionHandlers } from "../provider-runtime.ts";
 
 import {
   compactObject,
-  objectArray,
-  requiredBoolean,
-  requiredNumber,
   nullableInteger,
   nullableString,
+  objectArray,
   optionalBoolean,
   optionalInteger,
   optionalRecord,
   optionalString,
+  requiredBoolean,
+  requiredNumber,
   requiredString,
 } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
@@ -26,10 +25,10 @@ import {
   defineApiKeyProviderExecutors,
   defineProviderProxy,
   ProviderRequestError,
+  providerResponseError,
   providerUserAgent,
   requiredInputString,
   requiredResponseRecord,
-  providerResponseError,
   runProviderRequest,
   setSearchParams,
 } from "../provider-runtime.ts";
@@ -40,7 +39,7 @@ const validationPath = "/list-voices";
 
 type RetellAiActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
-export const retellAiActionHandlers: ProviderActionHandlers<"retell_ai", RetellAiActionHandler> = {
+const retellAiActionHandlers: ProviderActionHandlers<"retell_ai", RetellAiActionHandler> = {
   async list_voices(_input, context) {
     const payload = await requestRetellAiJson({
       path: validationPath,
@@ -232,7 +231,7 @@ function createRetellAiError(
   if (phase === "validate" && response.status >= 400 && response.status < 500) {
     return new ProviderRequestError(400, message, payload);
   }
-  return new ProviderRequestError(response.status || 502, message, payload);
+  return new ProviderRequestError(response.status || 502, message, payload, "provider_error");
 }
 
 function extractRetellAiErrorMessage(payload: unknown): string | undefined {

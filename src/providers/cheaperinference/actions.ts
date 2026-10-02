@@ -121,7 +121,7 @@ export const cheaperinferenceActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "create_message",
-    operationType: "write",
+    operationType: "read",
     description: "Create a Cheaper Inference Anthropic-format message through the `/messages` endpoint.",
     inputSchema: messageInputSchema,
     outputSchema: rawObjectSchema,
