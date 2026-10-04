@@ -37,15 +37,42 @@ hidden from execution discovery. It excludes virtual no-auth and Marketplace ent
 ## Discover setup requirements
 
 `GET /v1/providers/:service/setup` describes what a provider needs before it can be connected:
-the credential fields of each supported credential type, the OAuth client inputs, the scopes the
-connector requests, the provider's registration steps, the callback URL to register, and which
-OAuth client inputs are still missing. It never returns saved values, so a host can build its own
-connection form from it and submit through the endpoints below.
+the credential fields of each supported credential type, the OAuth client inputs, the default
+scopes (`scopes`), the additional scopes available for explicit selection (`optionalScopes`),
+the provider's registration steps, the callback URL to register, and which OAuth client inputs
+are still missing. It never returns saved values, so a host can build its own connection form
+from it and submit through the endpoints below.
 
 ## Start and track OAuth
 
 For local OAuth, configure your provider's OAuth client through the console or
 `/api/oauth/configs/:service` first. Register `/oauth/callback` on this runtime as the callback URL.
+
+Omit `requestedScopes` to request every default scope and no optional scopes. When provided,
+`requestedScopes` replaces the default scope list: only the listed scopes are requested, and
+each must appear in the provider's `scopes` or `optionalScopes`. Include any identity scopes
+needed by the provider's credential validator; defaults are not added automatically.
+
+For example, a Google Calendar OAuth client config for editing events, listing calendars, and
+querying availability can use:
+
+```json
+{
+  "clientId": "your-google-client-id",
+  "clientSecret": "your-google-client-secret",
+  "requestedScopes": [
+    "openid",
+    "email",
+    "profile",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.events.freebusy"
+  ]
+}
+```
+
+This config omits `calendar.readonly` and all other unlisted default scopes. Choose scopes
+that grant the minimum access needed for your application's features.
 
 For SaaS OAuth, configure the cloud project and select the provider configuration instead.
 The provider's OAuth callback is hosted by SaaS; after authorization, SaaS returns to a
