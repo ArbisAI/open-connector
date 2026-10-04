@@ -49,6 +49,9 @@ const channelRenewalLeadMs = 60 * 60 * 1000;
 const creatingGraceMs = 60 * 1000;
 const retryMs = 60 * 1000;
 const maximumUnresolvedChannels = 2;
+// Limit uncertain watch attempts within this window, but retain their channel
+// records until expiration so late notifications can still enable cleanup.
+const unresolvedWatchRetryWindowMs = 10 * 60 * 1000;
 
 const encoder = new TextEncoder();
 const changeFields =
@@ -139,9 +142,14 @@ export const googleDriveChanges: IntegrationDefinition = {
       await saveChannels(state, channels, nextReconcileAt(channels, context.now));
       return { outcome: active == null ? "pending" : "ready" };
     }
-    const unresolved = channels.filter((channel) => channel.resourceId == null);
-    if (unresolved.length >= maximumUnresolvedChannels) {
-      await saveChannels(state, channels, nextReconcileAt(channels, context.now));
+    const unresolvedRetryTimes = channels
+      .filter((channel) => channel.resourceId == null)
+      .map((channel) =>
+        Math.min(Date.parse(channel.expiration), Date.parse(channel.createdAt) + unresolvedWatchRetryWindowMs),
+      )
+      .filter((retryAt) => retryAt > currentTime);
+    if (unresolvedRetryTimes.length >= maximumUnresolvedChannels) {
+      await saveChannels(state, channels, new Date(Math.min(...unresolvedRetryTimes)));
       return { outcome: active == null ? "pending" : "ready" };
     }
     return await watch(context, channels);
