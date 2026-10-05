@@ -1,3 +1,4 @@
+import type { ProviderDispatchContext, ProviderHttpDispatchOptions } from "../core/provider-http-dispatch.ts";
 import type {
   ActionExecutor,
   ExecutionContext,
@@ -23,6 +24,11 @@ import {
   requiredString,
 } from "../core/cast.ts";
 import { createGuardedFetch } from "../core/guarded-fetch.ts";
+import {
+  dispatchProviderHttpAttempt,
+  ProviderHttpDispatchError,
+  runWithProviderHttpDispatch,
+} from "../core/provider-http-dispatch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
 
 /**
@@ -53,6 +59,14 @@ export interface ProviderFetchOptions {
  */
 export function createProviderFetch(options: ProviderFetchOptions = {}): ProviderFetch {
   return createGuardedFetch({
+    dispatchAttempt: async (attempt, signal, transport, revalidate) => {
+      try {
+        return await dispatchProviderHttpAttempt(attempt, signal, transport, revalidate);
+      } catch (error) {
+        if (error instanceof ProviderHttpDispatchError) throw new ProviderDispatchRequestError(error.retryAfterSeconds);
+        throw error;
+      }
+    },
     fetch: options.fetch,
     allowPrivateNetwork: options.allowPrivateNetwork,
     skipDnsValidation: options.skipDnsValidation,
@@ -77,6 +91,20 @@ export function createProviderFetch(options: ProviderFetchOptions = {}): Provide
  * the native fetch is always invoked without a stray receiver.
  */
 export const providerFetch: ProviderFetch = createProviderFetch();
+
+/** Preserve admission denials at the shared runtime boundary despite provider-specific error mapping. */
+export async function withProviderHttpDispatchResult<T>(
+  context: ProviderDispatchContext,
+  run: () => T | Promise<T>,
+  options?: ProviderHttpDispatchOptions,
+): Promise<T> {
+  try {
+    return await runWithProviderHttpDispatch(context, run, options);
+  } catch (error) {
+    if (error instanceof ProviderHttpDispatchError) throw new ProviderDispatchRequestError(error.retryAfterSeconds);
+    throw error;
+  }
+}
 
 /**
  * Default User-Agent sent by local provider executors.
@@ -271,6 +299,13 @@ export class ProviderRequestError extends Error {
     this.status = status;
     this.details = details;
     this.code = code;
+  }
+}
+
+/** A dispatch denial is retryable and must not be wrapped as a bad provider credential. */
+export class ProviderDispatchRequestError extends ProviderRequestError {
+  constructor(retryAfterSeconds?: number) {
+    super(429, "Provider HTTP dispatch is temporarily unavailable.", { retryAfterSeconds }, "rate_limited");
   }
 }
 

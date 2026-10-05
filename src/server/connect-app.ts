@@ -1,5 +1,6 @@
 import type { CatalogStore } from "../catalog-store.ts";
 import type { ActionPolicyService } from "../core/action-policy.ts";
+import type { ProviderHttpDispatchOptions } from "../core/provider-http-dispatch.ts";
 import type { RuntimeLogger, TransitFileUpload } from "../core/types.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { RuntimeJwtVerifier } from "./api/runtime-jwt.ts";
@@ -28,6 +29,7 @@ import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
 export interface ConnectAppOptions {
   catalog: CatalogStore;
   providerLoader: IProviderLoader;
+  providerHttpDispatch?: ProviderHttpDispatchOptions;
   runtimeDatabase: RuntimeDatabase;
   transitFiles: ITransitFileService;
   uploadTransitFile?: (request: Request) => Promise<TransitFileUpload>;
@@ -86,6 +88,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     isCustomClientConfigAvailable: (service) => options.secretCodec.encrypted && isCustomClientConfigAllowed(service),
   });
   const connections = new ConnectionService({
+    providerHttpDispatch: options.providerHttpDispatch,
     catalog: options.catalog,
     oauthCredentials: new OAuthCredentialRefreshService(oauthClientConfigs, options.providerLoader),
     providerLoader: options.providerLoader,
@@ -94,6 +97,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     marketplace,
   });
   const actions = new ActionRunner({
+    providerHttpDispatch: options.providerHttpDispatch,
     catalog: options.catalog,
     providerLoader: options.providerLoader,
     connections,
@@ -105,6 +109,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
   });
 
   const triggers = new TriggerRunner({
+    providerHttpDispatch: options.providerHttpDispatch,
     catalog: options.catalog,
     providerLoader: options.providerLoader,
     connections,
@@ -127,6 +132,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
       logger: options.logger,
     }),
     app: new ConnectServer({
+      providerHttpDispatch: options.providerHttpDispatch,
       catalog: options.catalog,
       publicOrigin: options.publicOrigin,
       providerLoader: options.providerLoader,

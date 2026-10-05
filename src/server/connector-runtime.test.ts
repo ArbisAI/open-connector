@@ -1,3 +1,4 @@
+import type { ProviderHttpAttempt } from "../core/provider-http-dispatch.ts";
 import type { ConnectorRuntime, ConnectorRuntimeOptions } from "./connector-runtime.ts";
 
 import { cp, mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
@@ -20,6 +21,213 @@ afterEach(async () => {
 });
 
 describe("headless runtime", () => {
+  it.each([45, undefined])(
+    "preserves console and runtime denial formats with retry delay %s",
+    async (retryAfterSeconds) => {
+      const fetcher = vi.fn<typeof fetch>();
+      vi.stubGlobal("fetch", fetcher);
+      runtime = await createConnectorRuntime({
+        ...(await fixture()),
+        providerHttpDispatch: { beforeAttempt: () => ({ allow: false, retryAfterSeconds }) },
+      });
+      const consoleResponse = await request(
+        "/api/connections/github",
+        { authType: "api_key", values: { apiKey: "fixture-secret" } },
+        "admin-token",
+        "PUT",
+      );
+      const runtimeResponse = await request("/v1/connections/github/connect/api-key", { apiKey: "fixture-secret" });
+      for (const response of [consoleResponse, runtimeResponse]) {
+        expect(response.status).toBe(429);
+        expect(response.headers.get("Retry-After")).toBe(
+          retryAfterSeconds === undefined ? null : String(retryAfterSeconds),
+        );
+      }
+      expect(await consoleResponse.json()).toEqual({
+        error: { code: "rate_limited", message: "Provider HTTP dispatch is temporarily unavailable." },
+      });
+      expect(await runtimeResponse.json()).toMatchObject({
+        success: false,
+        errorCode: "rate_limited",
+        message: "Provider HTTP dispatch is temporarily unavailable.",
+      });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect((await (await request("/v1/connections")).json()).data).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["oauth", "https://host.example/settings/connections"],
+    ["credential_validation", "https://host.example/settings/connections"],
+    ["oauth", undefined],
+    ["credential_validation", undefined],
+  ])("completes a denied %s connection request with return URI %s", async (operation, returnUri) => {
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      Response.json({ access_token: "fixture-access-token", token_type: "bearer", scope: "read:user" }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    runtime = await createConnectorRuntime({
+      ...(await fixture()),
+      providerHttpDispatch: {
+        beforeAttempt: (attempt) =>
+          attempt.context.operation === operation ? { allow: false, retryAfterSeconds: 45 } : { allow: true },
+      },
+    });
+    expect(
+      (
+        await request(
+          "/api/oauth/configs/github",
+          { clientId: "fixture-client", clientSecret: "fixture-secret" },
+          "admin-token",
+          "PUT",
+        )
+      ).status,
+    ).toBe(200);
+    const started = await request("/v1/connections/github/connect", { returnUri });
+    expect(started.status).toBe(200);
+    const attempt = (await started.json()).data;
+    const state = new URL(attempt.authorizationUrl).searchParams.get("state")!;
+    const path = `/oauth/callback?state=${encodeURIComponent(state)}&code=fixture-code`;
+    const callback = await request(path);
+    if (returnUri) {
+      expect(callback.status).toBe(302);
+      const returned = new URL(callback.headers.get("location")!);
+      expect(`${returned.origin}${returned.pathname}`).toBe(returnUri);
+      expect(Object.fromEntries(returned.searchParams)).toEqual({
+        status: "error",
+        service: "github",
+        code: "rate_limited",
+        message: "Provider HTTP dispatch is temporarily unavailable.",
+      });
+    } else {
+      expect(callback.status).toBe(400);
+      expect(await callback.json()).toEqual({
+        error: { code: "rate_limited", message: "Provider HTTP dispatch is temporarily unavailable." },
+      });
+    }
+    expect(callback.headers.get("Retry-After")).toBeNull();
+    const completed = await request(`/v1/connection-requests/${attempt.connectionRequestId}`);
+    expect((await completed.json()).data).toMatchObject({ status: "failed", errorCode: "rate_limited" });
+    expect((await (await request("/v1/connections")).json()).data).toEqual([]);
+    expect(fetcher).toHaveBeenCalledTimes(operation === "oauth" ? 0 : 1);
+    const replay = await request(path);
+    expect(replay.status).toBe(400);
+    expect(await replay.json()).toMatchObject({ error: { code: "invalid_oauth_state" } });
+  });
+
+  it("preserves dispatch denial for OAuth authorizations without a connection request", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    runtime = await createConnectorRuntime({
+      ...(await fixture()),
+      providerHttpDispatch: { beforeAttempt: () => ({ allow: false, retryAfterSeconds: 45 }) },
+    });
+    await request(
+      "/api/oauth/configs/github",
+      { clientId: "fixture-client", clientSecret: "fixture-secret" },
+      "admin-token",
+      "PUT",
+    );
+    const started = await request("/api/oauth/authorizations", { service: "github" });
+    expect(started.status).toBe(200);
+    const { state } = await started.json();
+    const callback = await request(`/oauth/callback?state=${encodeURIComponent(state)}&code=fixture-code`);
+    expect(callback.status).toBe(429);
+    expect(callback.headers.get("Retry-After")).toBe("45");
+    expect(await callback.json()).toEqual({
+      error: { code: "rate_limited", message: "Provider HTTP dispatch is temporarily unavailable." },
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect((await (await request("/v1/connections")).json()).data).toEqual([]);
+  });
+
+  it("preserves admission denial after a real provider remaps it into validation and transport errors", async () => {
+    let deny = false;
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ credit_balance: 100 }));
+    vi.stubGlobal("fetch", fetcher);
+    runtime = await createConnectorRuntime({
+      ...(await fixture(["ninjapear"])),
+      providerHttpDispatch: {
+        beforeAttempt: () => (deny ? { allow: false, retryAfterSeconds: 62 } : { allow: true }),
+      },
+    });
+    expect((await request("/v1/connections/ninjapear/connect/api-key", { apiKey: "fixture-secret" })).status).toBe(200);
+    const accounts = (await (await request("/v1/apps", undefined, "runtime-token")).json()).data;
+    deny = true;
+    const executed = await runtime.fetch(
+      new Request(`${publicOrigin}/v1/actions/ninjapear.get_credit_balance`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer runtime-token",
+          "content-type": "application/json",
+          "x-oo-connector-alias": accounts[0].alias,
+        },
+        body: JSON.stringify({ input: {} }),
+      }),
+    );
+    const validated = await request("/v1/connections/ninjapear/connect/api-key", { apiKey: "another-secret" });
+    for (const response of [executed, validated]) {
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("62");
+      expect(await response.json()).toMatchObject({ errorCode: "rate_limited" });
+    }
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("binds resolved connection authority and exposes dispatch denial as 429 on action, proxy and validation routes", async () => {
+    const attempts: ProviderHttpAttempt[] = [];
+    let deny = false;
+    const fetcher = vi.fn<typeof fetch>(async () => Response.json({ id: 1, login: "fixture-account" }));
+    vi.stubGlobal("fetch", fetcher);
+    runtime = await createConnectorRuntime({
+      ...(await fixture()),
+      providerHttpDispatch: {
+        bindAuthority: (context) => ({ workspaceId: "host-workspace", connectionLineageId: context.connectionId }),
+        beforeAttempt: (attempt) => {
+          attempts.push(attempt);
+          return deny ? { allow: false, retryAfterSeconds: 45 } : { allow: true };
+        },
+      },
+    });
+    const saved = await request("/v1/connections/github/connect/api-key", { apiKey: "fixture-secret" });
+    expect(saved.status).toBe(200);
+    const connection = (await saved.json()).data;
+    expect(attempts[0]?.context).toMatchObject({ operation: "credential_validation", service: "github" });
+    const accounts = (await (await request("/v1/apps", undefined, "runtime-token")).json()).data;
+    deny = true;
+    for (const [route, body] of [
+      ["/v1/actions/github.get_current_user", { input: {}, connectionId: "untrusted" }],
+      ["/v1/proxy/github", { method: "GET", endpoint: "/user", connectionId: "untrusted" }],
+    ] as const) {
+      const response = await runtime.fetch(
+        new Request(`${publicOrigin}${route}`, {
+          method: "POST",
+          headers: {
+            authorization: "Bearer runtime-token",
+            "content-type": "application/json",
+            "x-oo-connector-alias": accounts[0].alias,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+      expect(response.status).toBe(429);
+      expect(response.headers.get("Retry-After")).toBe("45");
+      expect(await response.json()).toMatchObject({ errorCode: "rate_limited" });
+      expect(attempts.at(-1)?.context.connectionId).toBe(connection.id);
+      expect(attempts.at(-1)?.context.connectionName).toBe(accounts[0].alias);
+      expect(attempts.at(-1)?.authority).toMatchObject({
+        workspaceId: "host-workspace",
+        connectionLineageId: connection.id,
+      });
+    }
+    const refused = await request("/v1/connections/github/connect/api-key", {
+      apiKey: "another-secret",
+    });
+    expect(refused.status).toBe(429);
+    expect(refused.headers.get("Retry-After")).toBe("45");
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(JSON.stringify(attempts)).not.toMatch(/fixture-secret|another-secret|untrusted/);
+  });
   it("serves the existing connection and action contracts under a host mount without a dashboard", async () => {
     const options = await fixture();
     vi.stubGlobal(
@@ -280,12 +488,12 @@ it("starts persisted cleanup without HTTP traffic and waits for its abort on clo
   }
 });
 
-async function fixture(): Promise<ConnectorRuntimeOptions> {
+async function fixture(services = ["github"]): Promise<ConnectorRuntimeOptions> {
   const root = await mkdtemp(join(tmpdir(), "open-connector-runtime-"));
   directories.push(root);
   const catalogDir = join(root, "catalog");
   await mkdir(catalogDir);
-  for (const service of ["github"])
+  for (const service of services)
     await cp(resolve(import.meta.dirname, `../../catalog/apps/${service}.json`), join(catalogDir, `${service}.json`));
   return {
     dataDir: join(root, "state"),
