@@ -490,6 +490,12 @@ export class ConnectionService {
     return this.createManagedConnectionSummary(await this.getStoredConnection(id));
   }
 
+  async getManagedConnectionByAlias(service: string, alias: string): Promise<ManagedConnectionSummary> {
+    const connection = await this.store.get(service, normalizeConnectionName(alias));
+    if (!connection) throw new ConnectionError("connection_not_found", "Connection not found.");
+    return this.createManagedConnectionSummary(connection);
+  }
+
   private createManagedConnectionSummary(stored: StoredConnection): ManagedConnectionSummary {
     if (stored.source === "saas")
       return {

@@ -640,10 +640,23 @@ export class ConnectServer {
 
     try {
       const policy = (await this.getPolicySnapshot(context)).evaluate(action);
+      const connectionId = optionalString(context.req.header("x-oo-connector-app-id"));
+      const stored = connectionId ? await this.options.connections.getStoredConnection(connectionId) : undefined;
+      if (stored && stored.service !== action.service) {
+        return jsonError(
+          context,
+          400,
+          "connection_service_mismatch",
+          "The connection belongs to a different provider.",
+        );
+      }
       return context.text(
         renderActionMarkdown(action, {
           transport: { kind: "http", origin: this.options.publicOrigin },
-          connection: await this.options.connections.getConnectionSummary(action.service, readConnectionName(context)),
+          connection: await this.options.connections.getConnectionSummary(
+            action.service,
+            stored?.connectionName ?? readConnectionName(context),
+          ),
           policy,
         }),
         200,

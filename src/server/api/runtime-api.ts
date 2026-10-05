@@ -1,7 +1,7 @@
 import type { RuntimeActionDefinition, RuntimeProviderDefinition } from "../../catalog-store.ts";
 import type { ConnectionError, ConnectionSummary, ManagedConnectionSummary } from "../../connection-service.ts";
 import type { ProviderAuthSetup } from "../../core/provider-setup.ts";
-import type { ExecutionResult, ProviderScenario } from "../../core/types.ts";
+import type { CredentialDefinition, ExecutionResult, ProviderScenario } from "../../core/types.ts";
 import type { OAuthClientConfigSummary } from "../../oauth/oauth-client-config-service.ts";
 import type { TriggerPermission } from "../../triggers/metadata.ts";
 import type { Context } from "hono";
@@ -386,7 +386,15 @@ export function connectionManagementFailure(error: { code: string; message: stri
 export interface RuntimeProviderSetup {
   service: string;
   auth: ProviderAuthSetup[];
+  authMethods: RuntimeAuthMethod[];
   oauthClient?: RuntimeOAuthClientSetup;
+}
+
+export interface RuntimeAuthMethod {
+  type: "oauth" | "api_key" | "custom_credentials" | "no_auth";
+  configured: boolean;
+  unavailableReason: string | null;
+  fields: CredentialDefinition[];
 }
 
 interface RuntimeOAuthClientSetup {
@@ -407,6 +415,16 @@ export function serializeRuntimeProviderSetup(
   return {
     service: provider.service,
     auth: provider.auth.map(describeProviderAuth),
+    authMethods: provider.auth.map((auth): RuntimeAuthMethod => {
+      const described = describeProviderAuth(auth);
+      const configured = auth.type !== "oauth2" || oauth?.configured === true;
+      return {
+        type: auth.type === "oauth2" ? "oauth" : auth.type === "custom_credential" ? "custom_credentials" : auth.type,
+        configured,
+        unavailableReason: configured ? null : "OAuth application is not configured.",
+        fields: "fields" in described ? described.fields : [],
+      };
+    }),
     oauthClient: oauth
       ? {
           configured: oauth.configured,

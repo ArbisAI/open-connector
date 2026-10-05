@@ -2584,6 +2584,25 @@ describe("ConnectServer", () => {
     expect(markdown).toContain("`messages:read`");
   });
 
+  it("selects the exact connection ID for an agent guide and rejects an unknown ID", async () => {
+    const app = createTestServer([{ ...apiKeyProvider, actions: [echoAction] }]).createApp();
+    const created = await app.request("/api/connections/example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authType: "api_key", connectionName: "personal", values: { apiKey: "secret-sentinel" } }),
+    });
+    const connection = await created.json();
+    const guide = await app.request("/api/actions/example.echo/agent.md", {
+      headers: { "x-oo-connector-app-id": connection.id },
+    });
+    expect(guide.status).toBe(200);
+    expect(await guide.text()).not.toContain("secret-sentinel");
+    const missing = await app.request("/api/actions/example.echo/agent.md", {
+      headers: { "x-oo-connector-app-id": "missing" },
+    });
+    expect(missing.status).toBe(404);
+  });
+
   it("renders agent.md request examples against the configured public origin", async () => {
     const app = createTestServer([{ ...apiKeyProvider, actions: [echoAction] }], {
       publicOrigin: "https://connector.example.com",
