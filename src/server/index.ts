@@ -17,6 +17,10 @@ import { createDirectoryMigrationSource } from "./storage/migration-source.ts";
 import { migratePostgresRuntimeDatabase, sqliteMigrationsNotice } from "./storage/node-runtime-database.ts";
 import { DEFAULT_RUN_LIMIT } from "./storage/runtime-store.ts";
 
+// arbis changes start
+import { createArbisApp } from "../arbis_server/arbis-app.ts";
+// arbis changes end
+
 setGlobalProxyFromEnv();
 
 const port = Number(process.env.PORT ?? 3000);
@@ -107,6 +111,9 @@ async function main(): Promise<void> {
   try {
     // The console is a host of the same request handler that embedded applications consume.
     const app = new Hono();
+    // arbis changes start: Arbis routes (e.g. POST /api/connect) are registered first; unmatched requests fall through
+    app.route("/", createArbisApp((request) => runtime.fetch(request)));
+    // arbis changes end
     app.use("*", async (context, next) => {
       const response = await runtime.fetch(context.req.raw);
       if (response.status === 404 && isConsoleShellRequest(context.req.path, context.req.method)) {
