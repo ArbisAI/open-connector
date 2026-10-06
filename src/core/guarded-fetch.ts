@@ -28,8 +28,12 @@ export interface GuardedFetchOptions {
    * load are honored.
    */
   allowPrivateNetwork?: boolean | (() => boolean);
+  /** Whether deployment trusted hosts may bypass private DNS answers. Defaults to true. */
+  allowTrustedHosts?: boolean;
   /** Error factory for guard violations. Defaults to TypeError. */
   createError?: (message: string) => Error;
+  /** Error factory for DNS lookup failures. Defaults to createError. */
+  createResolutionError?: (message: string) => Error;
   /** Maximum redirect hops followed before the request fails. */
   maxRedirects?: number;
   /**
@@ -186,9 +190,12 @@ export function unwrapGuardedFetch(fetcher: typeof fetch | undefined): typeof fe
  *   so this layer applies there too. Only on a runtime without `node:dns` does it
  *   degrade to a no-op, leaving the URL-literal and redirect-`Location` checks.
  *
- * Callers that pass `redirect: "manual"` or `redirect: "error"` keep native
- * semantics: the first response (or native redirect error) is returned after
- * the initial URL and its resolved addresses are validated.
+ * Callers that pass `redirect: "manual"` keep native semantics: the first
+ * response, including an unfollowed 3xx, is returned after the initial URL and
+ * its resolved addresses are validated, so the caller's `!response.ok` check
+ * rejects a redirect. Use "manual" rather than `redirect: "error"` to refuse
+ * redirects: Cloudflare Workers does not implement "error" and throws
+ * `TypeError: Invalid redirect value` before sending the request.
  */
 export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fetch {
   const baseFetch = unwrapGuardedFetch(options.fetch);
@@ -216,7 +223,14 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
         ? await resolveDefaultLookup()
         : options.lookup;
     const guardHop = (value: string, fieldName: string): Promise<URL> =>
-      assertGuardedEgressUrl(value, { fieldName, createError, allowPrivateNetwork, lookup });
+      assertGuardedEgressUrl(value, {
+        fieldName,
+        createError,
+        allowPrivateNetwork,
+        lookup,
+        allowTrustedHosts: options.allowTrustedHosts,
+        createResolutionError: options.createResolutionError,
+      });
 
     const request = input instanceof Request ? input : undefined;
     let url = await guardHop(request?.url ?? (input instanceof URL ? input.href : String(input)), "request URL");
@@ -295,6 +309,7 @@ export function createGuardedFetch(options: GuardedFetchOptions = {}): typeof fe
 }
 
 export interface GuardedEgressUrlOptions {
+  allowTrustedHosts?: boolean;
   /** Field name used in guard violation messages, e.g. `"request URL"`. */
   fieldName: string;
   /** Error factory for guard violations. */
@@ -351,11 +366,13 @@ export async function resolveGuardedEgressTarget(
     createError: options.createError,
     createResolutionError: options.createResolutionError ?? options.createError,
     lookup,
+    allowTrustedHosts: options.allowTrustedHosts !== false,
   });
   return { url, addresses };
 }
 
 interface ResolvedAddressPolicy {
+  allowTrustedHosts: boolean;
   allowPrivateNetwork: boolean;
   createError: (message: string) => Error;
   createResolutionError: (message: string) => Error;
@@ -397,7 +414,7 @@ async function assertResolvedAddressesAllowed(
   // Deployment-level trusted-host setting, resolved per request so a bootstrap that
   // configures it after module load is honored. It may open private and
   // VPN-mapped results, while unsafe special-use targets remain blocked.
-  const trustedHost = isEgressTrustedHost(hostname);
+  const trustedHost = policy.allowTrustedHosts && isEgressTrustedHost(hostname);
   for (const entry of results) {
     if (entry && typeof entry.address === "string") {
       const addressClass = classifyIpAddress(entry.address);
@@ -420,8 +437,9 @@ async function assertResolvedAddressesAllowed(
       // src/mail/imap-smtp/host-pinning.test.ts asserts.
       throw policy.createError(
         `${fieldName} must not resolve to private or reserved IP addresses ` +
-          `(if this host is reached through a corporate VPN or split DNS, add it to ` +
-          `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS)`,
+          (policy.allowTrustedHosts
+            ? `(if this host is reached through a corporate VPN or split DNS, add it to OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS)`
+            : `(check proxy Fake-IP and DNS settings; this request requires a public address)`),
       );
     }
   }

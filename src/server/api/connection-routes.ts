@@ -1,11 +1,14 @@
 import type { ConnectionService } from "../../connection-service.ts";
 import type { OAuthFlowService } from "../../oauth/oauth-flow-service.ts";
+import type { SaasOAuthService } from "../../saas/saas-oauth-service.ts";
 import type { z } from "zod";
 
 import { Hono } from "hono";
 import { ConnectionError } from "../../connection-service.ts";
 import { OAuthClientConfigError } from "../../oauth/oauth-client-config-service.ts";
 import { OAuthFlowError } from "../../oauth/oauth-flow-service.ts";
+import { SaasError } from "../../saas/saas-client.ts";
+import { hasAdminBearer } from "./auth.ts";
 import { readJsonBody, HttpRequestError } from "./http-utils.ts";
 import {
   connectionManagementFailure,
@@ -17,14 +20,24 @@ import {
 interface ConnectionRoutesOptions {
   connections: ConnectionService;
   oauthFlow: OAuthFlowService;
+  saasOAuth?: SaasOAuthService;
 }
 
 /** Personal connection management. Authentication runs in the parent app. */
-export function createConnectionRoutes({ connections, oauthFlow }: ConnectionRoutesOptions): Hono {
+export function createConnectionRoutes({ connections, oauthFlow, saasOAuth }: ConnectionRoutesOptions): Hono {
   const app = new Hono();
   // The local runtime has one administrator principal, including its bearer and browser sessions.
   const owner = "local-admin";
   app.onError((error, context) => {
+    if (error instanceof SaasError) {
+      if (error.retryAfter) context.header("Retry-After", error.retryAfter);
+      return writeRuntimeFailure(context, {
+        status: error.status,
+        errorCode: error.code,
+        message: error.message,
+        data: error.connectionRequestId ? { connectionRequestId: error.connectionRequestId } : undefined,
+      });
+    }
     if (
       error instanceof ConnectionError ||
       error instanceof OAuthFlowError ||
@@ -40,14 +53,31 @@ export function createConnectionRoutes({ connections, oauthFlow }: ConnectionRou
     const apps = (await connections.listManagedConnections()).map(serializeManagedConnection);
     return writeRuntimeSuccess(context, status ? apps.filter((app) => app.status === status) : apps);
   });
+  app.get("/connections/by-alias/:service/:alias", async (context) => {
+    return writeRuntimeSuccess(
+      context,
+      serializeManagedConnection(
+        await connections.getManagedConnectionByAlias(context.req.param("service"), context.req.param("alias")),
+      ),
+    );
+  });
   app.get("/connections/by-id/:appId", async (context) => {
     return writeRuntimeSuccess(
       context,
       serializeManagedConnection(await connections.getManagedConnection(context.req.param("appId"))),
     );
   });
+  app.delete("/connections/by-id/:appId", async (context) => {
+    const connection = await connections.getStoredConnection(context.req.param("appId"));
+    await connections.disconnect(connection.service, connection.connectionName);
+    return writeRuntimeSuccess(context, null);
+  });
   app.get("/connection-requests/:connectionRequestId", async (context) => {
-    const request = await oauthFlow.getConnectionRequest(context.req.param("connectionRequestId"), owner);
+    const id = context.req.param("connectionRequestId");
+    const request =
+      saasOAuth && hasAdminBearer(context)
+        ? await saasOAuth.sync(id, owner, context.req.raw.signal)
+        : await oauthFlow.getConnectionRequest(id, owner);
     if (!request)
       return writeRuntimeFailure(context, {
         status: 404,
@@ -68,6 +98,7 @@ export function createConnectionRoutes({ connections, oauthFlow }: ConnectionRou
           ...input,
           service: target?.service ?? context.req.param("service")!,
           owner,
+          signal: context.req.raw.signal,
           target,
         }),
       );
@@ -77,7 +108,11 @@ export function createConnectionRoutes({ connections, oauthFlow }: ConnectionRou
         const { apiKeyConnectionInput, customConnectionInput } = await import("./connection-input.ts");
         const body = await readJsonBody(context);
         const target = reconnect ? await connections.getStoredConnection(context.req.param("appId")!) : undefined;
-        if (target && target.credential.authType !== (authType === "api-key" ? "api_key" : "custom_credential")) {
+        if (
+          target &&
+          (target.source === "saas" ||
+            target.credential.authType !== (authType === "api-key" ? "api_key" : "custom_credential"))
+        ) {
           throw new ConnectionError("unsupported_auth_type", "The connection uses a different credential type.");
         }
         const service = target?.service ?? context.req.param("service")!;
@@ -89,8 +124,14 @@ export function createConnectionRoutes({ connections, oauthFlow }: ConnectionRou
         let summary;
         if (authType === "api-key") {
           const input = parseBody(apiKeyConnectionInput, body);
+          if (target && input.connectionName && input.connectionName !== target.connectionName)
+            throw new ConnectionError(
+              "connection_not_found",
+              "Connection alias does not match the selected connection.",
+            );
           summary = await connections.connectWithApiKey(service, {
             ...options,
+            connectionName: target?.connectionName ?? input.connectionName ?? options.connectionName,
             values: { ...input.extra, apiKey: input.apiKey },
             comment: input.comment,
           });

@@ -8,6 +8,7 @@ const service = "outlook_calendar";
 
 interface OutlookCalendarActionSource {
   name: string;
+  operationType: ActionDefinition["operationType"];
   description: string;
   requiredScopes: string[];
   providerPermissions: string[];
@@ -21,6 +22,12 @@ const stringArray = (description: string): JsonSchema => s.stringArray(descripti
 const calendarId = nonEmptyString("Outlook calendar ID.");
 const eventId = nonEmptyString("Outlook event ID.");
 const nextLink = s.url("Opaque Microsoft Graph pagination URL returned by a previous call.");
+const deltaLink = s.url(
+  "Opaque delta URL (deltaLink) returned by a previous calendar view delta round; starts the next round of changes for the same range. Ignored when nextLink is set.",
+);
+const delta = s.boolean(
+  "Track changes with a Microsoft Graph delta query (calendarView/delta) instead of listing: the first round returns every occurrence in the range, later rounds (started with deltaLink) return only additions, updates and removals (rows carrying @removed). Graph does not support select, filter, orderby or expand on calendar view delta queries.",
+);
 const select = stringArray("Microsoft Graph fields to include in the response.");
 const timeZone = nonEmptyString("Windows time zone name used for returned date-time values.");
 const dateTimeTimeZone = s.object(
@@ -159,12 +166,21 @@ const listQueryFields = {
   nextLink,
   preferTimeZone: timeZone,
 };
+const eventList = s.array(event, { description: "Events returned by Microsoft Graph." });
+const eventsNextLink = s.nullableString("Next-page URL, or null when no page remains.");
 const listEventsOutput = s.object(
-  {
-    events: s.array(event, { description: "Events returned by Microsoft Graph." }),
-    nextLink: s.nullableString("Next-page URL, or null when no page remains."),
-  },
+  { events: eventList, nextLink: eventsNextLink },
   { required: ["events", "nextLink"], description: "Paginated Outlook event response." },
+);
+const listCalendarViewOutput = s.object(
+  {
+    events: eventList,
+    nextLink: eventsNextLink,
+    deltaLink: s.nullableString(
+      "Delta URL for the next round of changes once a calendar view delta round is complete, or null (always null for plain listings).",
+    ),
+  },
+  { required: ["events", "nextLink", "deltaLink"], description: "Paginated Outlook calendar view response." },
 );
 const scheduleInformation = s.looseObject(
   {
@@ -215,6 +231,7 @@ const meetingTimeSuggestionsResult = s.looseObject(
 const actions: OutlookCalendarActionSource[] = [
   action(
     "get_current_user",
+    "read",
     "Get the profile for the connected Microsoft account.",
     outlookCalendarProfileScopes,
     user,
@@ -222,6 +239,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "list_calendars",
+    "read",
     "List calendars belonging to the connected Microsoft account.",
     outlookCalendarScopes,
     s.object(
@@ -235,6 +253,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "get_calendar",
+    "read",
     "Get one Outlook calendar by ID.",
     outlookCalendarScopes,
     calendar,
@@ -242,6 +261,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "list_events",
+    "read",
     "List events from the default calendar or a selected calendar.",
     outlookCalendarScopes,
     listEventsOutput,
@@ -249,21 +269,25 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "list_calendar_view",
+    "read",
     "List event occurrences and exceptions within a date-time range.",
     outlookCalendarScopes,
-    listEventsOutput,
+    listCalendarViewOutput,
     input(
       {
         calendarId,
         startDateTime: s.dateTime("Inclusive range start as an ISO 8601 timestamp."),
         endDateTime: s.dateTime("Exclusive range end as an ISO 8601 timestamp."),
         ...listQueryFields,
+        delta,
+        deltaLink,
       },
       ["startDateTime", "endDateTime"],
     ),
   ),
   action(
     "get_event",
+    "read",
     "Get one Outlook event by ID.",
     outlookCalendarScopes,
     event,
@@ -271,6 +295,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "get_schedule",
+    "read",
     "Get free and busy availability for users, rooms, or resources.",
     outlookCalendarScopes,
     s.object(
@@ -294,6 +319,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "find_meeting_times",
+    "read",
     "Suggest meeting times that satisfy attendee, location, and time constraints.",
     outlookCalendarSharedScopes,
     meetingTimeSuggestionsResult,
@@ -317,6 +343,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "create_event",
+    "write",
     "Create an event in the default calendar or a selected calendar.",
     outlookCalendarScopes,
     event,
@@ -324,6 +351,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "update_event",
+    "destructive",
     "Update writable fields on an Outlook event.",
     outlookCalendarScopes,
     event,
@@ -331,6 +359,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "delete_event",
+    "destructive",
     "Delete an Outlook event; deleting an organized meeting sends a cancellation to attendees.",
     outlookCalendarScopes,
     success,
@@ -338,6 +367,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "cancel_event",
+    "destructive",
     "Cancel an organized event and notify its attendees.",
     outlookCalendarScopes,
     success,
@@ -345,6 +375,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "accept_event",
+    "write",
     "Accept an event invitation for the connected account.",
     outlookCalendarScopes,
     success,
@@ -352,6 +383,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "decline_event",
+    "write",
     "Decline an event invitation for the connected account.",
     outlookCalendarScopes,
     success,
@@ -359,6 +391,7 @@ const actions: OutlookCalendarActionSource[] = [
   ),
   action(
     "tentatively_accept_event",
+    "write",
     "Tentatively accept an event invitation for the connected account.",
     outlookCalendarScopes,
     success,
@@ -398,6 +431,7 @@ function responseInput(allowNewTimeProposal: boolean): JsonSchema {
 
 function action(
   name: string,
+  operationType: ActionDefinition["operationType"],
   description: string,
   scopes: string[],
   outputSchema: JsonSchema,
@@ -405,6 +439,7 @@ function action(
 ): OutlookCalendarActionSource {
   return {
     name,
+    operationType,
     description,
     requiredScopes: scopes,
     providerPermissions: scopes,

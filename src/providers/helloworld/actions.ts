@@ -8,6 +8,7 @@ const service = "helloworld";
 export const helloworldActions: ActionDefinition[] = [
   defineProviderAction(service, {
     name: "say_hello",
+    operationType: "read",
     description: "Return a greeting message, optionally addressed to a given name.",
     inputSchema: s.object(
       {

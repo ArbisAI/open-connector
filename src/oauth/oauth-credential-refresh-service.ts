@@ -47,6 +47,8 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       refreshed = await providerOAuth.refreshAccessToken({
         refreshToken,
         clientConfig: config,
+        metadata: credential.metadata,
+        providerSecret: credential.providerSecret,
         fetcher: providerFetch,
         createError,
       });
@@ -78,11 +80,13 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       // not an option: a refresh only runs once that timestamp is already past, so
       // the stored token would look expired immediately and refresh on every call.
       expiresAt: refreshed.expiresAt ?? expiresAtFromLifetime(expiresIn),
-      providerSecret: credential.providerSecret,
+      providerSecret: refreshed.providerSecret ?? credential.providerSecret,
       profile: credential.profile,
       metadata: {
         ...credential.metadata,
         ...refreshed.metadata,
+        // Refresh rotates tokens within the existing authorization, including legacy absence.
+        oauthAuthorizationId: credential.metadata.oauthAuthorizationId,
         expires_in: expiresIn,
         refreshedAt: new Date().toISOString(),
       },

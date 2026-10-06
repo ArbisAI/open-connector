@@ -1,4 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { PollDefinition } from "../../triggers/common/poll.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { OAuthProviderContext } from "../provider-runtime.ts";
 
@@ -11,6 +13,7 @@ import {
   ProviderRequestError,
   readTransitFileInput,
 } from "../provider-runtime.ts";
+import { oneDriveItemChanged } from "./trigger-on-item-changed.ts";
 
 const graphBaseUrl = "https://graph.microsoft.com/v1.0";
 const graphOrigin = new URL(graphBaseUrl).origin;
@@ -37,10 +40,13 @@ type OneDriveRequestInput = {
   headers?: Record<string, string>;
   body?: unknown;
   rawBody?: BodyInit;
-  absoluteUrlPolicy?: "children" | "search";
+  absoluteUrlPolicy?: OneDriveNextLinkPolicy;
   allowStatuses?: number[];
   signal?: AbortSignal;
 };
+
+/** Which paginated endpoint a caller-supplied `@odata.nextLink` is allowed to target. */
+type OneDriveNextLinkPolicy = "children" | "search" | "permissions";
 
 type OneDriveGraphCollection<T> = {
   value?: T;
@@ -82,6 +88,9 @@ export const oneDriveActionHandlers: ProviderActionHandlers<"one_drive", OneDriv
   },
   list_folder_children(input, deps) {
     return listFolderChildren(input, deps);
+  },
+  list_item_permissions(input, deps) {
+    return listItemPermissions(input, deps);
   },
   search_items(input, deps) {
     return searchItems(input, deps);
@@ -196,7 +205,7 @@ async function oneDriveRequest(pathOrUrl: string, input: OneDriveRequestInput) {
 function buildOneDriveUrl(
   pathOrUrl: string,
   query?: Record<string, string | undefined>,
-  absoluteUrlPolicy?: "children" | "search",
+  absoluteUrlPolicy?: OneDriveNextLinkPolicy,
 ) {
   const isAbsolutePath = isAbsoluteUrl(pathOrUrl);
   const target = isAbsolutePath ? new URL(pathOrUrl) : new URL(pathOrUrl, `${graphBaseUrl}/`);
@@ -222,12 +231,15 @@ function buildOneDriveUrl(
   return target;
 }
 
-function assertAllowedOneDriveNextLink(target: URL, absoluteUrlPolicy?: "children" | "search") {
+function assertAllowedOneDriveNextLink(target: URL, absoluteUrlPolicy?: OneDriveNextLinkPolicy) {
   if (absoluteUrlPolicy === "children" && !isAllowedChildrenNextLinkPath(target.pathname)) {
     throw new ProviderRequestError(400, "nextLink must target OneDrive children pagination endpoints");
   }
   if (absoluteUrlPolicy === "search" && !isAllowedSearchNextLinkPath(target.pathname)) {
     throw new ProviderRequestError(400, "nextLink must target OneDrive search pagination endpoints");
+  }
+  if (absoluteUrlPolicy === "permissions" && !isAllowedPermissionsNextLinkPath(target.pathname)) {
+    throw new ProviderRequestError(400, "nextLink must target OneDrive permission pagination endpoints");
   }
 }
 
@@ -249,6 +261,21 @@ function isAllowedChildrenNextLinkPath(pathname: string) {
 function isAllowedSearchNextLinkPath(pathname: string) {
   const suffix = readDrivePathSuffix(pathname);
   return Boolean(suffix && suffix.startsWith("/root/search("));
+}
+
+function isAllowedPermissionsNextLinkPath(pathname: string) {
+  const suffix = readDrivePathSuffix(pathname);
+  if (!suffix) {
+    return false;
+  }
+  if (suffix === "/root/permissions") {
+    return true;
+  }
+  if (suffix.startsWith("/items/")) {
+    const segments = suffix.split("/").filter(Boolean);
+    return segments.length === 3 && segments[0] === "items" && segments[2] === "permissions";
+  }
+  return suffix.startsWith("/root:/") && suffix.endsWith(":/permissions");
 }
 
 function readDrivePathSuffix(pathname: string) {
@@ -413,6 +440,25 @@ async function listFolderChildren(input: Record<string, unknown>, deps: OneDrive
             $expand: formatOptionalStringArray(input.expand),
             $orderby: readOptionalString(input.orderBy),
           }),
+    }),
+  );
+
+  return {
+    items: readCollectionItems(payload.value),
+    nextLink: readNextLink(payload),
+  };
+}
+
+async function listItemPermissions(input: Record<string, unknown>, deps: OneDriveRuntimeDeps) {
+  const nextLink = readOptionalString(input.nextLink);
+  const path = nextLink ? nextLink : `${buildDriveItemPathFromInput(input)}/permissions`;
+
+  const payload = asObject(
+    await oneDriveJsonRequest<OneDriveGraphCollection<unknown[]>>(path, {
+      accessToken: deps.accessToken,
+      fetcher: deps.fetcher,
+      absoluteUrlPolicy: nextLink ? "permissions" : undefined,
+      query: nextLink ? undefined : compactObject({ $select: formatOptionalStringArray(input.select) }),
     }),
   );
 
@@ -1164,7 +1210,7 @@ function buildDriveBasePath(driveId?: string) {
   if (!driveId || driveId === "me") {
     return "me/drive";
   }
-  return `drives/${encodeURIComponent(driveId)}`;
+  return `drives/${encodeDriveSegment(driveId, "driveId")}`;
 }
 
 function buildDriveRootPath(driveId?: string) {
@@ -1172,7 +1218,7 @@ function buildDriveRootPath(driveId?: string) {
 }
 
 function buildDriveItemPath(itemId: string, driveId?: string) {
-  return `${buildDriveBasePath(driveId)}/items/${encodeURIComponent(itemId)}`;
+  return `${buildDriveBasePath(driveId)}/items/${encodeDriveSegment(itemId, "itemId")}`;
 }
 
 function buildDrivePathFromPath(path: string, driveId: string | undefined, fieldName: string) {
@@ -1193,6 +1239,19 @@ function buildDrivePathFromSegments(segments: string[], driveId?: string) {
   return `${buildDriveBasePath(driveId)}/root:/${segments.map((segment) => encodeURIComponent(segment)).join("/")}:`;
 }
 
+// encodeURIComponent leaves "." and ".." intact, and new URL() then collapses them as dot segments,
+// which would let an input escape its Graph path prefix while still carrying the user's token.
+function assertSafeDriveSegment(segment: string, fieldName: string) {
+  if (segment === "." || segment === ".." || segment.includes("\\")) {
+    throw new ProviderRequestError(400, `${fieldName} must not contain ".", "..", or backslash path segments`);
+  }
+}
+
+function encodeDriveSegment(segment: string, fieldName: string) {
+  assertSafeDriveSegment(segment, fieldName);
+  return encodeURIComponent(segment);
+}
+
 function normalizeDrivePath(path: string, fieldName: string) {
   const trimmed = path.trim();
   if (!trimmed) {
@@ -1207,6 +1266,9 @@ function normalizeDrivePath(path: string, fieldName: string) {
   const segments = trimmed.slice(1).split("/");
   if (segments.some((segment) => segment.length === 0)) {
     throw new ProviderRequestError(400, `${fieldName} must not contain empty path segments`);
+  }
+  for (const segment of segments) {
+    assertSafeDriveSegment(segment, fieldName);
   }
   return segments;
 }
@@ -1224,6 +1286,9 @@ function normalizeFlexibleDrivePath(path: string, fieldName: string) {
   const segments = rawPath.split("/");
   if (segments.some((segment) => segment.length === 0)) {
     throw new ProviderRequestError(400, `${fieldName} must not contain empty path segments`);
+  }
+  for (const segment of segments) {
+    assertSafeDriveSegment(segment, fieldName);
   }
   return segments;
 }
@@ -1514,3 +1579,5 @@ function toArrayBuffer(bytes: Uint8Array) {
 
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
+
+export const triggers: readonly (IntegrationDefinition | PollDefinition)[] = [oneDriveItemChanged];

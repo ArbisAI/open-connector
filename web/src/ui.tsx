@@ -21,22 +21,20 @@ import {
   KeyRound,
   Loader2,
   Monitor,
-  Store,
   Moon,
   RefreshCw,
+  Settings,
   Sun,
   TerminalSquare,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation } from "react-router";
-import { defaultMarketplaceDiscoveryUrl, isDefaultMarketplace } from "../../src/marketplace/default-marketplace";
+import { Link, Navigate, NavLink, Route, Routes, useLocation } from "react-router";
 import { AccessPage } from "./access-page";
 import { ActionsPage } from "./actions-page";
 import { ApiError, apiGet, apiPost } from "./api";
 import oomolConnectLogoUrl from "./assets/oomol-connect-logo.png";
-import { HostedServicePromo } from "./hosted-service-promo";
+import { normalizeGatewayUrl } from "./client-onboarding";
 import { persistLang, supportedLangs } from "./i18n";
-import { MarketplacePage } from "./marketplace-page";
 import { emptyData } from "./model";
 import { OAuthAppsPage } from "./oauth-apps-page";
 import { OverviewPage } from "./overview-page";
@@ -46,14 +44,15 @@ import { RunsPage } from "./runs-page";
 import { InlineError, StatusDot } from "./shared-ui";
 import { useThemeMode } from "./theme";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Toaster } from "@/components/ui/sonner";
 
 const navItems = [
   { path: "/overview", labelKey: "nav.overview", icon: Home },
   { path: "/providers", labelKey: "nav.providers", icon: Cable },
-  { path: "/marketplace", labelKey: "nav.marketplace", icon: Store },
   { path: "/oauth-apps", labelKey: "nav.oauthApps", icon: Fingerprint },
   { path: "/actions", labelKey: "nav.actions", icon: TerminalSquare },
   { path: "/runs", labelKey: "nav.runs", icon: Activity },
@@ -340,6 +339,17 @@ function AppShell(props: {
 }): ReactNode {
   const t = useTranslate();
   const location = useLocation();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [clientGatewayUrl, setClientGatewayUrl] = useState(() =>
+    typeof window === "undefined" ? "http://localhost:3000" : window.location.origin,
+  );
+  const clientBaseUrl =
+    normalizeGatewayUrl(clientGatewayUrl) ??
+    (typeof window === "undefined" ? "http://localhost:3000" : window.location.origin);
+  const connectionSettingsParams = new URLSearchParams(location.pathname === "/providers" ? location.search : "");
+  connectionSettingsParams.set("onekey", "overview");
+  connectionSettingsParams.delete("features");
+  const connectionSettingsUrl = `/providers?${connectionSettingsParams}`;
   const heading = headingForPath(location.pathname);
   const section = location.pathname.split("/").filter(Boolean)[0];
   const isOverviewPage = heading === "overview";
@@ -352,7 +362,7 @@ function AppShell(props: {
   ]
     .filter(Boolean)
     .join(" ");
-  const currentNavItem = navItems.find((item) => item.labelKey === `nav.${heading}`) ?? navItems[0];
+  const currentNavItem = navItems.find((item) => item.path === `/${section}`) ?? navItems[0];
   const CurrentNavIcon = currentNavItem.icon;
 
   return (
@@ -361,7 +371,7 @@ function AppShell(props: {
         <div className="brand">
           <img className="brand-mark" src={oomolConnectLogoUrl} alt="" />
           <div>
-            <div className="brand-name">OOMOL Connect</div>
+            <div className="brand-name">Open Connector</div>
             <div className="brand-subtitle">{t("brand.subtitle")}</div>
           </div>
         </div>
@@ -382,28 +392,6 @@ function AppShell(props: {
               );
             })}
           </nav>
-          {isDefaultMarketplace(props.data.marketplace?.discoveryUrl ?? defaultMarketplaceDiscoveryUrl) ? (
-            <HostedServicePromo />
-          ) : null}
-        </div>
-
-        <div className="sidebar-footer">
-          <LanguageSelect />
-          <ThemeControl theme={props.theme} onThemeChange={props.onThemeChange} />
-          <div className="runtime-status">
-            <StatusDot ok={!props.error} />
-            <span>{props.error ? t("common.apiUnavailable") : t("common.runtimeReady")}</span>
-          </div>
-          <div className="button-row tight">
-            <Button variant="outline" size="icon-sm" onClick={props.onRefresh} aria-label={t("shell.refreshData")}>
-              {props.loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-            </Button>
-            {props.showLogout ? (
-              <Button variant="outline" size="sm" onClick={props.onLogout}>
-                {t("shell.logout")}
-              </Button>
-            ) : null}
-          </div>
         </div>
       </aside>
 
@@ -413,12 +401,61 @@ function AppShell(props: {
             <CurrentNavIcon size={16} />
             <h1>{t(`shell.headings.${heading}.title`)}</h1>
           </div>
-          {props.loading ? (
-            <div className="loading-panel page-loading">
-              <Loader2 className="spin" size={16} />
-              {t("common.loadingRuntimeData")}
-            </div>
-          ) : null}
+          <div className="shell-header-actions">
+            {props.loading ? (
+              <div className="loading-panel page-loading">
+                <Loader2 className="spin" size={16} />
+                {t("common.loadingRuntimeData")}
+              </div>
+            ) : null}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={t("shell.settings")}
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+              title={t("shell.settings")}
+              onClick={() => setSettingsOpen(true)}
+            >
+              <Settings size={18} aria-hidden="true" />
+            </Button>
+          </div>
+          <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+            <DialogContent className="console-settings-panel">
+              <DialogHeader>
+                <DialogTitle>{t("shell.settings")}</DialogTitle>
+                <DialogDescription>{t("shell.settingsDescription")}</DialogDescription>
+              </DialogHeader>
+              <div className="console-settings-controls">
+                <LanguageSelect />
+                <ThemeControl theme={props.theme} onThemeChange={props.onThemeChange} />
+              </div>
+              <div className="console-settings-section">
+                <Button asChild variant="outline">
+                  <Link to={connectionSettingsUrl} onClick={() => setSettingsOpen(false)}>
+                    <Cable size={15} aria-hidden="true" />
+                    {t("providers.hostedAccess.restore")}
+                  </Link>
+                </Button>
+                <p className="console-settings-feature-description">{t("shell.oomolKeyDescription")}</p>
+              </div>
+              <div className="console-settings-runtime">
+                <div className="runtime-status">
+                  <StatusDot ok={!props.error} />
+                  <span>{props.error ? t("common.apiUnavailable") : t("common.runtimeReady")}</span>
+                </div>
+                <Button variant="outline" size="sm" onClick={props.onRefresh} disabled={props.loading}>
+                  {props.loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                  {t("common.refresh")}
+                </Button>
+              </div>
+              {props.showLogout ? (
+                <Button variant="outline" onClick={props.onLogout}>
+                  {t("shell.logout")}
+                </Button>
+              ) : null}
+            </DialogContent>
+          </Dialog>
         </header>
 
         <main className={mainClassName}>
@@ -428,14 +465,20 @@ function AppShell(props: {
             <Route index element={<Navigate to="/overview" replace />} />
             <Route path="/overview" element={<OverviewPage data={props.data} onRefresh={props.onRefresh} />} />
             <Route path="/providers" element={<ProvidersPage data={props.data} onRefresh={props.onRefresh} />} />
-            <Route path="/marketplace" element={<MarketplacePage data={props.data} onRefresh={props.onRefresh} />} />
+            <Route path="/marketplace" element={<Navigate to="/providers?onekey=1" replace />} />
             <Route
               path="/providers/:service"
               element={<ProvidersPage data={props.data} onRefresh={props.onRefresh} />}
             />
             <Route path="/oauth-apps" element={<OAuthAppsPage data={props.data} onRefresh={props.onRefresh} />} />
-            <Route path="/actions" element={<ActionsPage data={props.data} onRefresh={props.onRefresh} />} />
-            <Route path="/actions/:actionId" element={<ActionsPage data={props.data} onRefresh={props.onRefresh} />} />
+            <Route
+              path="/actions"
+              element={<ActionsPage data={props.data} gatewayUrl={clientBaseUrl} onRefresh={props.onRefresh} />}
+            />
+            <Route
+              path="/actions/:actionId"
+              element={<ActionsPage data={props.data} gatewayUrl={clientBaseUrl} onRefresh={props.onRefresh} />}
+            />
             <Route
               path="/runs"
               element={<RunsPage initialRuns={props.data.runs} nextCursor={props.data.runsNextCursor} />}
@@ -452,11 +495,20 @@ function AppShell(props: {
                 />
               }
             />
-            <Route path="/resources" element={<ResourcesPage />} />
+            <Route
+              path="/resources"
+              element={<ResourcesPage gatewayUrl={clientGatewayUrl} onGatewayUrlChange={setClientGatewayUrl} />}
+            />
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </main>
       </div>
+      <Toaster
+        position="top-right"
+        closeButton
+        containerAriaLabel={t("shell.notifications")}
+        toastOptions={{ closeButtonAriaLabel: t("common.close") }}
+      />
     </div>
   );
 }
@@ -484,7 +536,7 @@ export function UnlockView(props: UnlockViewProps): ReactNode {
         <div className="brand">
           <img className="brand-mark" src={oomolConnectLogoUrl} alt="" />
           <div>
-            <div className="brand-name">OOMOL Connect</div>
+            <div className="brand-name">Open Connector</div>
             <div className="brand-subtitle">{t("brand.adminAccess")}</div>
           </div>
         </div>

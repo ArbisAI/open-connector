@@ -1,4 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { PollDefinition } from "../../triggers/common/poll.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { OAuthProviderContext } from "../provider-runtime.ts";
 
@@ -10,7 +12,11 @@ import {
   pickOptionalString,
   requiredRecord,
 } from "../../core/cast.ts";
-import { defineGoogleProviderExecutors, googleBearerProxyAuth, googleServiceAccountValidator } from "../google-auth.ts";
+import {
+  defineGoogleProviderExecutors,
+  googleBearerProxyAuth,
+  googleServiceAccountValidator,
+} from "../googledrive/runtime-auth.ts";
 import { combineProviderActionHandlers, defineProviderProxy, ProviderRequestError } from "../provider-runtime.ts";
 import { googlecalendarEventActionHandlers } from "./runtime-events.ts";
 import {
@@ -22,6 +28,7 @@ import {
   resolveSettingId,
 } from "./runtime-shared.ts";
 import { googlecalendarOAuthScopes } from "./scopes.ts";
+import { googleCalendarEventChanged } from "./trigger-on-event-changed.ts";
 
 type GooglecalendarRuntimeDeps = OAuthProviderContext;
 
@@ -731,3 +738,5 @@ function asRecord<T>(value: unknown) {
 
   return value as Record<string, T | undefined>;
 }
+
+export const triggers: readonly (IntegrationDefinition | PollDefinition)[] = [googleCalendarEventChanged];

@@ -34,7 +34,8 @@ const handlers: ProviderActionHandlers<"sellersprite_mcp", SellerSpriteMcpHandle
     if (name === "call_tool") {
       return (input, context) => call(context, required(input.toolName, "toolName"), object(input.arguments));
     }
-    return (input, context) => call(context, name, input);
+    return (input, context) =>
+      call(context, name, name === "traffic_extend" ? { ...input, queryType: input.queryType ?? 2 } : input);
   },
 );
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, handlers, {
@@ -60,7 +61,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
   auth: { type: "api_key_header", name: "secret-key" },
   skipDnsValidation: true,
   timeoutMs,
-  redirect: "error",
+  redirect: "manual",
   customizeRequest({ url, headers }) {
     if (url.toString() !== endpoint) {
       throw new ProviderRequestError(400, "SellerSprite MCP proxy only supports the official /mcp endpoint");
@@ -113,7 +114,9 @@ function normalize(result: ToolResult): unknown {
       )
     )
       throw new ProviderRequestError(401, message, envelope);
-    if (envelope.code === "ERROR_VISIT_MAX") throw new ProviderRequestError(429, message, envelope);
+    if (envelope.code === "ERROR_VISIT_MAX" || envelope.code === "ERROR_MAXIMUM_ACCESS_PER_MINUTE") {
+      throw new ProviderRequestError(429, message, envelope);
+    }
     if (envelope.code === "ERROR_AUTH_ERROR") throw new ProviderRequestError(403, message, envelope);
     if (envelope.code === "ERROR_PARAM") throw new ProviderRequestError(400, message, envelope);
     throw new ProviderRequestError(502, message, envelope);

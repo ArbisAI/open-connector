@@ -11,7 +11,7 @@ import { slackCredentialValidators } from "../../providers/slack/runtime.ts";
 import { createConnectApp } from "../connect-app.ts";
 import { TransitFileService } from "../files/transit-files.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
-import { SqliteRuntimeDatabase } from "../storage/sqlite-runtime-store.ts";
+import { SqliteRuntimeDatabase } from "../storage/sqlite/runtime-store.ts";
 
 const provider: ProviderDefinition = {
   service: "example",
@@ -90,6 +90,28 @@ async function setup(
   return { app, database, call, start };
 }
 
+it("looks up an exact alias without listing credentials or falling back to a default", async () => {
+  const { call, database } = await setup(undefined, { adminToken: "admin", runtimeToken: "runtime" });
+  const created = await (
+    await call("/v1/connections/example/connect/api-key", {
+      apiKey: "credential-sentinel",
+      connectionName: "nexo-recovery",
+    })
+  ).json();
+  const list = vi.spyOn(database.connectionStore, "list");
+  const response = await call("/v1/connections/by-alias/example/nexo-recovery");
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  expect(JSON.parse(text).data.id).toBe(created.data.id);
+  expect(text).not.toContain("credential-sentinel");
+  expect(list).not.toHaveBeenCalled();
+  const missing = await call("/v1/connections/by-alias/example/missing");
+  expect(missing.status).toBe(404);
+  expect((await missing.json()).errorCode).toBe("app_not_found");
+  expect((await call("/v1/connections/by-alias/another/nexo-recovery")).status).toBe(404);
+  expect((await call("/v1/connections/by-alias/example/nexo-recovery", undefined, "runtime")).status).toBe(401);
+});
+
 it("reports console OAuth validation failure without saving a connection or losing client configuration", async () => {
   const { call, database } = await setup(undefined, {}, provider, {
     async oauth2() {
@@ -124,6 +146,35 @@ it("marks a managed OAuth request failed when credential validation fails", asyn
 });
 
 describe("shared personal connection API", () => {
+  it("retains a caller-generated durable alias for lost-response recovery", async () => {
+    const { call } = await setup();
+    const created = await call("/v1/connections/example/connect/api-key", {
+      apiKey: "secret-sentinel",
+      connectionName: "nexo-durable",
+    });
+    const data = (await created.json()).data;
+    expect(data.alias).toBe("nexo-durable");
+    const list = await (await call("/v1/connections")).json();
+    expect(list.data).toContainEqual(expect.objectContaining({ id: data.id, alias: "nexo-durable" }));
+    expect(JSON.stringify(list)).not.toContain("secret-sentinel");
+    expect(
+      (
+        await call(`/v1/connections/by-id/${data.id}/connect/api-key`, {
+          apiKey: "other",
+          connectionName: "other-alias",
+        })
+      ).status,
+    ).toBe(404);
+  });
+  it("deletes only the exact selected connection by ID", async () => {
+    const { app, call } = await setup();
+    const first = (await (await call("/v1/connections/example/connect/api-key", { apiKey: "first" })).json()).data;
+    const second = (await (await call("/v1/connections/example/connect/api-key", { apiKey: "second" })).json()).data;
+    expect((await app.request(`/v1/connections/by-id/${first.id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await call(`/v1/connections/by-id/${first.id}`)).status).toBe(404);
+    expect((await call(`/v1/connections/by-id/${second.id}`)).status).toBe(200);
+    expect((await app.request("/v1/connections/by-id/missing", { method: "DELETE" })).status).toBe(404);
+  });
   it("returns an independent request ID and persists the exact connected app after callback consumption", async () => {
     const { call, start, database } = await setup();
     const request = await start();

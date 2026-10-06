@@ -12,6 +12,7 @@ import {
   serializeRuntimeFailure,
   unknownActionFailure,
   writeRuntimeActionHttpResult,
+  writeRuntimeFailure,
 } from "./runtime-api.ts";
 
 function actionStatusFor(code: string): number {
@@ -49,6 +50,7 @@ describe("runtime action metadata", () => {
         service: "example",
         name: "echo",
         description: "Echo the provided value.",
+        operationType: "write",
         requiredScopes: [],
         providerPermissions: [],
         inputSchema: { type: "object" },
@@ -258,5 +260,86 @@ describe("runtime action HTTP results", () => {
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual(result.body);
+  });
+});
+
+describe("Retry-After on the action route", () => {
+  const rateLimited = serializeRuntimeActionResult({
+    actionId: "slack.list_conversations",
+    executionId: "execution-1",
+    auditPersisted: true,
+    result: {
+      ok: false,
+      error: {
+        code: "rate_limited",
+        message: "ratelimited",
+        details: { status: 429, details: { error: "ratelimited", retryAfterSeconds: 73 } },
+      },
+    },
+  });
+
+  async function write(result: RuntimeActionHttpResult): Promise<Response> {
+    const app = new Hono().post("/", (context) => writeRuntimeActionHttpResult(context, result));
+    return app.request("/", { method: "POST" });
+  }
+
+  it("answers a fresh provider 429 with the provider's Retry-After and keeps it in the body", async () => {
+    const response = await write(rateLimited);
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("73");
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      errorCode: "rate_limited",
+      data: { status: 429, details: { retryAfterSeconds: 73 } },
+    });
+  });
+
+  it("answers a proxy 429 with the provider's Retry-After", async () => {
+    const app = new Hono().post("/", (context) =>
+      writeRuntimeFailure(context, {
+        status: 429,
+        errorCode: "rate_limited",
+        message: "Rate limited.",
+        data: { status: 429, details: { retryAfterSeconds: 73 } },
+        meta: { service: "notion" },
+      }),
+    );
+    const response = await app.request("/", { method: "POST" });
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("73");
+  });
+
+  it("re-emits the header on an idempotent replay from the persisted body", async () => {
+    const replayed = parseRuntimeActionHttpResult(JSON.parse(JSON.stringify(rateLimited)));
+    const response = await write(replayed);
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("73");
+    await expect(response.json()).resolves.toEqual(rateLimited.body);
+  });
+
+  it.each([
+    ["a 429 without the hint", { status: 429, data: { status: 429, details: { error: "ratelimited" } } }],
+    [
+      "a 429 whose hint is not an integer",
+      { status: 429, data: { status: 429, details: { retryAfterSeconds: "73" } } },
+    ],
+    ["a 429 whose hint is negative", { status: 429, data: { status: 429, details: { retryAfterSeconds: -1 } } }],
+    [
+      "a 429 whose hint is too large to print as digits",
+      { status: 429, data: { status: 429, details: { retryAfterSeconds: 1e21 } } },
+    ],
+    ["a 429 with null data", { status: 429, data: null }],
+    ["a non-429 carrying the hint", { status: 500, data: { status: 503, details: { retryAfterSeconds: 73 } } }],
+  ] as const)("sets no header for %s", async (_label, input) => {
+    const response = await write({
+      status: input.status,
+      body: { success: false, message: "Action failed.", data: input.data, errorCode: "provider_error", meta: {} },
+    });
+
+    expect(response.status).toBe(input.status);
+    expect(response.headers.get("retry-after")).toBeNull();
   });
 });

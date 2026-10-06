@@ -6,7 +6,6 @@ import type { IStagedTransitFileService } from "./files/transit-file-store.ts";
 
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { loadCatalog } from "../catalog-store.ts";
 import { ActionPolicyService } from "../core/action-policy.ts";
 import { setEgressTrustedHosts, setPrivateNetworkAccessAllowed } from "../core/request.ts";
@@ -14,10 +13,10 @@ import { ProviderLoader } from "../providers/provider-loader.ts";
 import { executorModules } from "../providers/registry.generated.ts";
 import { createRuntimeJwtVerifier } from "./api/runtime-jwt.ts";
 import { createConnectApp } from "./connect-app.ts";
+import { getConnectorAssetDirectory } from "./connector-assets.ts";
 import { cleanupStagedTransitFiles, createNodeTransitFileUpload } from "./files/node-transit-file-upload.ts";
 import { TransitFileService } from "./files/transit-files.ts";
 import { createSecretCodec } from "./secrets/secret-codec.ts";
-import { isStandaloneExecutable } from "./server-assets.ts";
 import { createDirectoryMigrationSource } from "./storage/migration-source.ts";
 import { createNodeRuntimeDatabase } from "./storage/node-runtime-database.ts";
 import { DEFAULT_RUN_LIMIT } from "./storage/runtime-store.ts";
@@ -69,6 +68,8 @@ export interface ConnectorRuntimeOptions {
   dataDir: string;
   /** External HTTP(S) URL, optionally including a mount path such as /connector. */
   publicOrigin: string;
+  /** False when the host supplied a development fallback instead of an explicit public origin. */
+  publicOriginConfigured?: boolean;
   /** Encrypts stored credentials, OAuth client configuration, pending OAuth state and replayed action responses. Omit to store them in plain text. */
   encryptionKey?: string;
   /** Bearer token required for management requests such as connections, OAuth clients and policies. Omit to leave them open. */
@@ -79,7 +80,7 @@ export interface ConnectorRuntimeOptions {
   jwt?: RuntimeJwtConfig;
   postgres?: ConnectorPostgresOptions;
   network?: ConnectorNetworkOptions;
-  /** Allow or block actions and proxies by name. */
+  /** Allow or block actions, proxies and Triggers by name. */
   actionPolicy?: ActionPolicyConfig;
   /** Services, or `*`, whose connections may carry their own OAuth client instead of the configured one. */
   allowedCustomOAuth?: string[];
@@ -108,12 +109,7 @@ export interface ConnectorRuntime {
 
 let runtimeActive = false;
 
-/** Directory to include in a host's Bun compile.assets. Its basename keeps connector assets namespaced. */
-export function getConnectorAssetDirectory(): string {
-  return isStandaloneExecutable()
-    ? join(import.meta.dirname, "open-connector")
-    : fileURLToPath(new URL("../../assets/open-connector/", import.meta.url));
-}
+export { getConnectorAssetDirectory } from "./connector-assets.ts";
 
 /** Create a headless runtime without opening a listener or installing process signal handlers. */
 export async function createConnectorRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorRuntime> {
@@ -210,13 +206,14 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
     const tempDir = join(dataDir, "tmp/transit-files");
     await transitFiles.cleanupExpired();
     await cleanupStagedTransitFiles(tempDir, ttlSeconds * 1000);
-    const { app, runtimeAuthConfigured } = await createConnectApp({
+    const { app, runtimeAuthConfigured, saasCleanup, triggerMaintenance } = await createConnectApp({
       catalog,
       providerLoader: new ProviderLoader(executorModules),
       runtimeDatabase: database,
       transitFiles,
       uploadTransitFile: createNodeTransitFileUpload({ transitFiles, tempDir }),
       publicOrigin,
+      configuredOrigin: options.publicOriginConfigured === false ? undefined : publicOrigin,
       secretCodec,
       adminToken: options.adminToken,
       runtimeToken: options.runtimeToken,
@@ -226,6 +223,8 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
       logger: options.logger,
       serveDocumentation: options.apiReference ?? false,
     });
+    saasCleanup.start();
+    triggerMaintenance.start();
     const shutdown = new AbortController();
     const pending = new Set<Promise<Response>>();
     let closing: Promise<void> | undefined;
@@ -253,7 +252,7 @@ async function openRuntime(options: ConnectorRuntimeOptions): Promise<ConnectorR
         if (!closing) {
           closing = Promise.resolve().then(async () => {
             shutdown.abort(new Error("Open Connector runtime is closing."));
-            await Promise.allSettled([...pending]);
+            await Promise.allSettled([...pending, saasCleanup.close(), triggerMaintenance.close()]);
             try {
               await database.close();
             } finally {

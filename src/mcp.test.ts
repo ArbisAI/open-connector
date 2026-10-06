@@ -19,6 +19,7 @@ const echoAction: ActionDefinition = {
   service: "example",
   name: "echo",
   description: "Echo input.",
+  operationType: "write",
   requiredScopes: [],
   providerPermissions: [],
   inputSchema: {
@@ -46,6 +47,7 @@ const getAccountAction: ActionDefinition = {
   service: "example_auth",
   name: "get_account",
   description: "Return the connected account.",
+  operationType: "read",
   requiredScopes: ["records:read"],
   providerPermissions: [],
   inputSchema: {
@@ -101,6 +103,13 @@ describe("MCP server", () => {
         "get_action_guide",
         "execute_action",
       ]);
+      expect(result.tools.map((tool) => tool.annotations)).toEqual([
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+        { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+      ]);
     });
   });
 
@@ -142,6 +151,7 @@ describe("MCP server", () => {
           {
             id: "example.echo",
             service: "example",
+            operationType: "write",
           },
         ],
       });
@@ -170,6 +180,9 @@ describe("MCP server", () => {
       expect(guide.structuredContent).toMatchObject({
         ok: true,
         data: {
+          capability: {
+            operationType: "write",
+          },
           markdown: expect.stringContaining("Call the `execute_action` tool with these arguments:"),
         },
       });
@@ -231,6 +244,42 @@ describe("MCP server", () => {
       },
       { getPolicySnapshot: async () => policy },
     );
+  });
+
+  it("summarizes capability in search results and keeps the full capability in guides", async () => {
+    await withAuthenticatedMcpClient(async (client) => {
+      const search = await client.callTool({ name: "search_actions", arguments: { service: "example_auth" } });
+      const guide = await client.callTool({
+        name: "get_action_guide",
+        arguments: { actionId: "example_auth.get_account" },
+      });
+
+      expect(search.structuredContent).toEqual({
+        ok: true,
+        data: [
+          expect.objectContaining({
+            id: "example_auth.get_account",
+            capability: {
+              execution: { locallyExecutable: true, needsCredential: true },
+              policy: { allowed: true, checks: [] },
+              connection: {
+                connectionName: "default",
+                profile: { accountId: "account-default", displayName: "Default Account" },
+              },
+            },
+          }),
+        ],
+      });
+      expect(guide.structuredContent).toMatchObject({
+        ok: true,
+        data: {
+          capability: {
+            requiredScopes: ["records:read"],
+            connection: { connectionName: "default", profile: defaultCredential.profile },
+          },
+        },
+      });
+    });
   });
 
   it("uses an explicitly selected connection for guides and execution", async () => {
@@ -779,7 +828,7 @@ class MemoryConnectionStore implements IConnectionStore {
     return this.connections.get(this.key(service, connectionName));
   }
 
-  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+  async set(service: string, connectionName: string, credential: ResolvedCredential) {
     const key = this.key(service, connectionName);
     const connection = {
       id: this.connections.get(key)?.id ?? crypto.randomUUID(),

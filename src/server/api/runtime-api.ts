@@ -1,14 +1,15 @@
 import type { RuntimeActionDefinition, RuntimeProviderDefinition } from "../../catalog-store.ts";
 import type { ConnectionError, ConnectionSummary, ManagedConnectionSummary } from "../../connection-service.ts";
 import type { ProviderAuthSetup } from "../../core/provider-setup.ts";
-import type { ExecutionResult, ProviderScenario } from "../../core/types.ts";
+import type { CredentialDefinition, ExecutionResult, ProviderScenario } from "../../core/types.ts";
 import type { OAuthClientConfigSummary } from "../../oauth/oauth-client-config-service.ts";
+import type { TriggerPermission } from "../../triggers/metadata.ts";
 import type { Context } from "hono";
 
-import { optionalInteger, optionalRecord, requiredRecord } from "../../core/cast.ts";
+import { optionalInteger, optionalString, optionalRecord, requiredRecord } from "../../core/cast.ts";
 import { describeProviderAuth } from "../../core/provider-setup.ts";
 
-type RuntimeStatus = 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 500 | 501;
+export type RuntimeStatus = 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 500 | 501 | 502 | 503 | 504;
 
 export type RuntimeResponseMeta = Record<string, unknown>;
 
@@ -55,6 +56,7 @@ export interface RuntimeActionMetadata {
   service: string;
   name: string;
   description: string;
+  operationType: RuntimeActionDefinition["operationType"];
   requiredScopes: string[];
   providerPermissions: string[];
   inputSchema: RuntimeActionDefinition["inputSchema"];
@@ -66,6 +68,7 @@ export interface RuntimeActionMetadata {
 
 export interface RuntimeConnectedApp {
   id: string;
+  providerAccountId: string;
   service: string;
   status: "active" | "disconnected";
   alias: string;
@@ -88,6 +91,9 @@ export interface RuntimeFailureInput {
 export interface RuntimeActionResultInput {
   actionId: string;
   executionId: string;
+  remoteExecutionId?: string;
+  failureStatus?: RuntimeStatus;
+  retryAfter?: string;
   auditPersisted: boolean;
   result: ExecutionResult;
 }
@@ -122,6 +128,7 @@ export function serializeRuntimeAction(action: RuntimeActionDefinition): Runtime
     service: action.service,
     name: action.name,
     description: action.description,
+    operationType: action.operationType,
     requiredScopes: action.requiredScopes,
     providerPermissions: action.providerPermissions,
     inputSchema: action.inputSchema,
@@ -137,6 +144,7 @@ export function serializeRuntimeAction(action: RuntimeActionDefinition): Runtime
 export function serializeRuntimeConnectedApp(connection: ConnectionSummary): RuntimeConnectedApp {
   return {
     id: connection.id,
+    providerAccountId: connection.profile.accountId,
     service: connection.service,
     status: connection.configured ? "active" : "disconnected",
     alias: connection.connectionName,
@@ -199,7 +207,7 @@ export function serializeRuntimeFailure(input: RuntimeFailureInput): RuntimeActi
 /** Build the persistable HTTP response for a completed action execution. */
 export function serializeRuntimeActionResult(input: RuntimeActionResultInput): RuntimeActionHttpResult {
   const { actionId, executionId, auditPersisted, result } = input;
-  const meta = { executionId, actionId, auditPersisted };
+  const meta = { executionId, actionId, auditPersisted, remoteExecutionId: input.remoteExecutionId };
   if (result.ok) {
     return {
       status: 200,
@@ -213,10 +221,10 @@ export function serializeRuntimeActionResult(input: RuntimeActionResultInput): R
   }
 
   return serializeRuntimeFailure({
-    status: mapExecutionErrorStatus(result.error?.code, result.error?.details),
+    status: input.failureStatus ?? mapExecutionErrorStatus(result.error?.code, result.error?.details),
     errorCode: result.error?.code ?? "provider_error",
     message: result.error?.message ?? "Action execution failed.",
-    data: result.error?.details ?? null,
+    data: input.retryAfter ? { details: { retryAfter: input.retryAfter } } : (result.error?.details ?? null),
     meta,
   });
 }
@@ -243,9 +251,31 @@ export function parseRuntimeActionHttpResult(value: unknown): RuntimeActionHttpR
   throw invalid("status and body envelope do not match");
 }
 
-/** Write a newly serialized or replayed action response. */
+/**
+ * Write a newly serialized or replayed action response; runtime failures,
+ * including proxy failures, go through here as well. A 429 whose provider
+ * details carry `retryAfterSeconds` also answers with the `Retry-After`
+ * header, so HTTP callers pace on the provider's own hint; the body keeps it,
+ * which is what an idempotent replay re-emits the header from.
+ */
 export function writeRuntimeActionHttpResult(context: Context, result: RuntimeActionHttpResult): Response {
+  const retryAfter = optionalString(optionalRecord(optionalRecord(result.body.data)?.details)?.retryAfter);
+  if (result.status === 429 && retryAfter && (/^\d+$/.test(retryAfter) || Number.isFinite(Date.parse(retryAfter))))
+    context.header("Retry-After", retryAfter);
+  const retryAfterSeconds = readRuntimeRetryAfterSeconds(result);
+  if (retryAfterSeconds !== undefined) {
+    context.header("Retry-After", String(retryAfterSeconds));
+  }
   return context.json(result.body, result.status);
+}
+
+function readRuntimeRetryAfterSeconds(result: RuntimeActionHttpResult): number | undefined {
+  if (result.status !== 429) {
+    return undefined;
+  }
+  const seconds = optionalInteger(optionalRecord(optionalRecord(result.body.data)?.details)?.retryAfterSeconds);
+  // A safe integer is what keeps String() in plain delay-seconds digits: 1e21 would print as "1e+21".
+  return seconds !== undefined && Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : undefined;
 }
 
 export function mapConnectionErrorStatus(error: ConnectionError): 400 | 404 | 409 {
@@ -311,6 +341,9 @@ function isRuntimeStatus(value: unknown): value is RuntimeStatus {
     value === 409 ||
     value === 413 ||
     value === 429 ||
+    value === 502 ||
+    value === 503 ||
+    value === 504 ||
     value === 500 ||
     value === 501
   );
@@ -353,23 +386,45 @@ export function connectionManagementFailure(error: { code: string; message: stri
 export interface RuntimeProviderSetup {
   service: string;
   auth: ProviderAuthSetup[];
+  authMethods: RuntimeAuthMethod[];
   oauthClient?: RuntimeOAuthClientSetup;
+}
+
+export interface RuntimeAuthMethod {
+  type: "oauth" | "api_key" | "custom_credentials" | "no_auth";
+  configured: boolean;
+  unavailableReason: string | null;
+  fields: CredentialDefinition[];
 }
 
 interface RuntimeOAuthClientSetup {
   configured: boolean;
   customClientAvailable: boolean;
+  /** Redirect URI to register with the provider: the configured override, else the runtime callback. */
   expectedRedirectUri: string;
   missingFields: string[];
 }
 
 export function serializeRuntimeProviderSetup(
   provider: RuntimeProviderDefinition,
-  oauth?: OAuthClientConfigSummary,
+  oauth?: Pick<
+    OAuthClientConfigSummary,
+    "configured" | "customClientAvailable" | "expectedRedirectUri" | "missingFields"
+  >,
 ): RuntimeProviderSetup {
   return {
     service: provider.service,
     auth: provider.auth.map(describeProviderAuth),
+    authMethods: provider.auth.map((auth): RuntimeAuthMethod => {
+      const described = describeProviderAuth(auth);
+      const configured = auth.type !== "oauth2" || oauth?.configured === true;
+      return {
+        type: auth.type === "oauth2" ? "oauth" : auth.type === "custom_credential" ? "custom_credentials" : auth.type,
+        configured,
+        unavailableReason: configured ? null : "OAuth application is not configured.",
+        fields: "fields" in described ? described.fields : [],
+      };
+    }),
     oauthClient: oauth
       ? {
           configured: oauth.configured,
@@ -379,4 +434,13 @@ export function serializeRuntimeProviderSetup(
         }
       : undefined,
   };
+}
+
+export function serializeRuntimeTriggerPermissions(
+  provider: RuntimeProviderDefinition,
+): (TriggerPermission & { requiredScopes: readonly string[] })[] {
+  return (provider.triggerPermissions ?? []).map((permission) => ({
+    ...permission,
+    requiredScopes: permission.providerPermissions,
+  }));
 }

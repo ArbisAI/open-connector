@@ -1,5 +1,5 @@
 import type { ProviderActionDefinition } from "../../core/provider-definition.ts";
-import type { JsonSchema } from "../../core/types.ts";
+import type { ActionDefinition, JsonSchema } from "../../core/types.ts";
 
 import { s } from "../../core/json-schema.ts";
 import { defineProviderAction } from "../../core/provider-definition.ts";
@@ -13,6 +13,7 @@ import { chuhaijiangActions } from "./chuhaijiang-actions.ts";
 import { maidalvAction } from "./maidalv-actions.ts";
 import { mercadoActions } from "./mercado-actions.ts";
 import { seerfarActions } from "./seerfar-actions.ts";
+import { sifActions } from "./sif-actions.ts";
 import { zhihuiyaActions } from "./zhihuiya-actions.ts";
 
 const service = "linkfox";
@@ -128,12 +129,12 @@ const pageSizeMultipleOfTen = (schema: JsonSchema) => schema;
 
 function action<const TName extends string>(
   name: TName,
-  _operationType: "read" | "write" | "destructive",
+  operationType: ActionDefinition["operationType"],
   description: string,
   inputSchema: JsonSchema,
   outputSchema: JsonSchema,
 ) {
-  return defineProviderAction(service, { name, description, inputSchema, outputSchema });
+  return defineProviderAction(service, { name, operationType, description, inputSchema, outputSchema });
 }
 
 const emptyInput = s.object("No input is required for this LinkFox action.", {});
@@ -1188,6 +1189,7 @@ const tiktokShopProductInput = s.object("TikTok Shop product detail parameters."
 });
 
 export const linkfoxActions: ProviderActionDefinition[] = [
+  ...sifActions,
   ...mercadoActions,
   ...zhihuiyaActions,
   ...chuhaijiangActions,
@@ -1440,7 +1442,7 @@ export const linkfoxActions: ProviderActionDefinition[] = [
   ),
   action(
     "get_amazon_store_report",
-    "read",
+    "write",
     "Create or resume an Amazon Selling Partner report and wait for a download URL.",
     storeReportInput,
     reportOutput,
@@ -1475,7 +1477,7 @@ export const linkfoxActions: ProviderActionDefinition[] = [
   ),
   action(
     "get_amazon_ads_report",
-    "read",
+    "write",
     "Create or resume an Amazon Ads report and wait for a download URL.",
     adsReportInput,
     reportOutput,

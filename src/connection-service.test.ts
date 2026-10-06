@@ -81,6 +81,7 @@ const catalogOnlyProvider: ProviderDefinition = {
       service: "catalog_only",
       name: "query",
       description: "Query the catalog-only provider.",
+      operationType: "read",
       requiredScopes: [],
       providerPermissions: [],
       inputSchema: {},
@@ -592,6 +593,77 @@ describe("ConnectionService", () => {
     await expect(service.listConnections()).resolves.toEqual([]);
   });
 
+  // Credential metadata also holds client secrets and provider-private data.
+  // The summary is a public shape, so this asserts the WHOLE object rather
+  // than the one new key: a test that only checks `oauthAuthorizationId` is
+  // present would pass just as happily if a client secret leaked beside it.
+  it("exposes only the OAuth provenance out of internal credential metadata", async () => {
+    const service = createService([oauthProvider]);
+    const summary = await service.setOAuthCredential(
+      "example",
+      {
+        authType: "oauth2",
+        accessToken: "test-access-token",
+        refreshToken: "test-refresh-token",
+        tokenType: "Bearer",
+        profile: testProfile,
+        metadata: {
+          oauthAuthorizationId: "completed-authorization",
+          oauthClientConfig: { clientId: "test-client", clientSecret: "test-client-secret" },
+          oauthClientSecretExtra: { appBearerToken: "test-app-token" },
+          providerData: "internal-only",
+        },
+      },
+      "work",
+    );
+    const expected = {
+      id: summary.id,
+      service: "example",
+      connectionName: "work",
+      authType: "oauth2",
+      configured: true,
+      virtual: false,
+      default: false,
+      profile: testProfile,
+      oauthAuthorizationId: "completed-authorization",
+    };
+
+    // Every way a caller can reach a summary, because they are separate code
+    // paths and a field added to one is not added to the others.
+    expect(JSON.parse(JSON.stringify(summary))).toEqual(expected);
+    expect(await service.getConnectionSummary("example", "work")).toEqual(expected);
+    expect(await service.listConnections()).toEqual([expected]);
+    expect(await service.listConnectionsByService("example")).toEqual([expected]);
+    expect((await service.resolveForExecution("example", "work")).summary).toEqual(expected);
+  });
+
+  // Absent, not null or empty: a connection made before this existed has no
+  // provenance, and "" would read as one. The validator case is the same
+  // assertion from the other side — provenance is minted by the callback that
+  // completed consent, so a provider validator must not be able to supply it.
+  it.each([undefined, null, 42, { nested: "not-a-string" }])(
+    "omits legacy or non-string provenance, and refuses validator-supplied provenance (%#)",
+    async (oauthAuthorizationId) => {
+      const service = createService([oauthProvider], {
+        providerLoader: new FakeProviderLoader({
+          async oauth2() {
+            return { profile: testProfile, metadata: { oauthAuthorizationId: "validator-supplied-id" } };
+          },
+        }),
+      });
+      const summary = await service.setOAuthCredential("example", {
+        authType: "oauth2",
+        accessToken: "access-token",
+        tokenType: "Bearer",
+        profile: testProfile,
+        metadata: { oauthAuthorizationId },
+      });
+
+      expect(summary).not.toHaveProperty("oauthAuthorizationId");
+      expect(await service.getConnectionSummary("example")).not.toHaveProperty("oauthAuthorizationId");
+    },
+  );
+
   it("preserves the existing OAuth connection when reconnect validation fails", async () => {
     const validate = vi.fn().mockResolvedValue({ profile: testProfile });
     const service = createService([oauthProvider], {
@@ -610,7 +682,10 @@ describe("ConnectionService", () => {
     await expect(
       service.setOAuthCredential("example", { ...credential, accessToken: "replacement-token" }, "work"),
     ).rejects.toMatchObject({ code: "credential_verification_failed" });
-    await expect(service.getCredential("example", "work")).resolves.toEqual(credential);
+    await expect(service.getCredential("example", "work")).resolves.toEqual({
+      ...credential,
+      metadata: { providerAccountVerified: true, oauthAuthorizationId: undefined },
+    });
     await expect(service.listConnections()).resolves.toEqual([original]);
   });
 
@@ -883,6 +958,7 @@ describe("ConnectionService", () => {
       }),
     );
     const current = await replacementExecution;
+    if (current.kind !== "local") throw new Error("Expected local connection");
     await expect(current.getCredential("example")).resolves.toMatchObject({
       accessToken: "replacement-refreshed-token",
     });
@@ -987,6 +1063,7 @@ describe("ConnectionService", () => {
 
     expect(updated.id).toBe(original.id);
     expect(resolved.summary?.id).toBe(original.id);
+    if (resolved.kind !== "local") throw new Error("Expected local connection");
     await expect(resolved.getCredential("uptimerobot")).resolves.toMatchObject({
       apiKey: "original-key",
       profile: { accountId: "example-account" },
@@ -1105,7 +1182,7 @@ class MemoryConnectionStore implements IConnectionStore {
     return this.store.get(createConnectionKey(service, connectionName));
   }
 
-  async set(service: string, connectionName: string, credential: ResolvedCredential): Promise<StoredConnection> {
+  async set(service: string, connectionName: string, credential: ResolvedCredential) {
     const key = createConnectionKey(service, connectionName);
     const connection = {
       id: this.store.get(key)?.id ?? crypto.randomUUID(),
@@ -1158,3 +1235,31 @@ class MemoryOAuthClientConfigStore {
     return [...this.configs.values()];
   }
 }
+
+it("keeps SaaS references out of the local credential and refresh paths", async () => {
+  const store = new MemoryConnectionStore();
+  const remote: StoredConnection = {
+    source: "saas",
+    id: "remote",
+    revision: "revision",
+    service: "example",
+    connectionName: "default",
+    reference: {
+      managedProjectId: "project",
+      providerConfigId: "config",
+      externalUserId: "user",
+      connectedAccountId: "account",
+      localRequestId: "request",
+    },
+    profile: testProfile,
+    status: "active",
+    comment: null,
+  };
+  vi.spyOn(store, "get").mockResolvedValue(remote);
+  vi.spyOn(store, "list").mockResolvedValue([remote]);
+  const service = createService([oauthProvider], { store });
+  expect(await service.resolveForExecution("example")).toMatchObject({ kind: "saas", reference: remote.reference });
+  expect(await service.getConnectionSummary("example")).toMatchObject({ profile: testProfile, configured: true });
+  expect(await service.listAuthenticatedServices(["example"])).toContain("example");
+  await expect(service.getCredential("example")).rejects.toMatchObject({ code: "unsupported_auth_type" });
+});

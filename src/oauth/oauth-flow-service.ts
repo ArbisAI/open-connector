@@ -1,6 +1,7 @@
 import type { StoredConnection, ConnectionService } from "../connection-service.ts";
 import type { OAuth2AuthDefinition } from "../core/types.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
+import type { SaasOAuthService } from "../saas/saas-oauth-service.ts";
 import type { ISecretCodec } from "../server/secrets/secret-codec-core.ts";
 import type {
   ConnectionRequestStore,
@@ -51,6 +52,12 @@ export interface OAuthAuthorizationState {
   createdAt: string;
   pkceCodeVerifier?: string;
   authorizationScopes?: string[];
+  /**
+   * `redirect_uri` the authorization request carried. The code exchange must
+   * repeat it (RFC 6749 §4.1.3) even when the client config changes while the
+   * browser is at the provider. Absent on states created before it was recorded.
+   */
+  redirectUri?: string;
   clientConfig?: OAuthClientConfig;
 }
 
@@ -61,6 +68,7 @@ export interface OAuthFlowServiceOptions {
   states: IOAuthStateStore;
   requests: ConnectionRequestStore;
   stateMaxAgeMs?: number;
+  saasOAuth?: SaasOAuthService;
   secretCodec?: ISecretCodec;
   isCustomClientConfigAllowed?: (service: string) => boolean;
 }
@@ -85,11 +93,13 @@ export class OAuthFlowService {
   private readonly states: IOAuthStateStore;
   private readonly requests: ConnectionRequestStore;
   private readonly stateMaxAgeMs: number;
+  private readonly saasOAuth?: SaasOAuthService;
   private readonly secretCodec?: ISecretCodec;
   private readonly isCustomClientConfigAllowed: (service: string) => boolean;
 
   constructor(input: OAuthFlowServiceOptions) {
     this.clientConfigs = input.clientConfigs;
+    this.saasOAuth = input.saasOAuth;
     this.connections = input.connections;
     this.providerLoader = input.providerLoader;
     this.states = input.states;
@@ -100,6 +110,7 @@ export class OAuthFlowService {
   }
 
   async startAuthorization(input: OAuthAuthorizationStartInput): Promise<OAuthAuthorizationStart> {
+    await this.saasOAuth?.assertLocalAuthorization(input.service);
     const { pending, authorizationUrl } = await this.prepareAuthorization(input);
     await this.states.deleteCreatedBefore(new Date(Date.now() - this.stateMaxAgeMs).toISOString());
     await this.states.set(pending);
@@ -108,6 +119,8 @@ export class OAuthFlowService {
 
   async startConnectionRequest(input: OAuthConnectionRequestInput): Promise<OAuthConnectionRequestStart> {
     validateReturnUri(input.returnUri);
+    const remote = await this.saasOAuth?.start(input);
+    if (remote) return remote;
     const auth = this.clientConfigs.getOAuthDefinition(input.service);
     let requestedScopes: string[] | undefined;
     if (input.authorizationOptionIds !== undefined) {
@@ -121,7 +134,7 @@ export class OAuthFlowService {
         .filter((option) => option.required || selected.has(option.id))
         .map((option) => option.id);
     }
-    if (input.target && input.target.credential.authType !== "oauth2") {
+    if (input.target && (input.target.source === "saas" || input.target.credential.authType !== "oauth2")) {
       throw new OAuthFlowError("unsupported_auth_type", "This connection does not use OAuth.");
     }
     const configured = await this.clientConfigs.getConfig(input.service);
@@ -133,7 +146,7 @@ export class OAuthFlowService {
       extra: { ...configured.extra, ...input.extra },
       secretExtra: { ...configured.secretExtra, ...input.secretExtra },
     });
-    const connectionName = input.target?.connectionName ?? crypto.randomUUID();
+    const connectionName = input.target?.connectionName ?? input.connectionName ?? crypto.randomUUID();
     const { pending, authorizationUrl } = await this.prepareAuthorization(
       {
         service: input.service,
@@ -205,6 +218,7 @@ export class OAuthFlowService {
       input.authorizationOptionIds,
       this.clientConfigs.getEffectiveScopes(service, config),
     );
+    const redirectUri = this.clientConfigs.expectedRedirectUri(service, config);
     const pending: OAuthAuthorizationState = {
       service,
       connectionName,
@@ -212,6 +226,7 @@ export class OAuthFlowService {
       createdAt: now.toISOString(),
       pkceCodeVerifier,
       authorizationScopes: auth.authorizationOptions ? authorizationScopes : undefined,
+      redirectUri,
       clientConfig: input.clientConfig ? config : undefined,
     };
 
@@ -220,12 +235,7 @@ export class OAuthFlowService {
       authorizationUrl.searchParams.set(key, value);
     }
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.clientId, "client_id", config.clientId);
-    setAuthorizationParam(
-      authorizationUrl,
-      auth.authorizationRequestFields?.redirectUri,
-      "redirect_uri",
-      this.clientConfigs.expectedRedirectUri(service),
-    );
+    setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.redirectUri, "redirect_uri", redirectUri);
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.responseType, "response_type", "code");
     setAuthorizationParam(authorizationUrl, auth.authorizationRequestFields?.state, "state", state);
     if (authorizationScopes.length > 0 && auth.authorizationRequestFields?.scope !== false) {
@@ -239,8 +249,13 @@ export class OAuthFlowService {
       authorizationUrl.searchParams.set("code_challenge_method", auth.pkce?.method ?? "S256");
     }
 
+    const providerOAuth = await this.providerLoader.loadProviderOAuthRuntime?.(service);
+    const resolvedAuthorizationUrl = providerOAuth?.buildAuthorizationUrl
+      ? await providerOAuth.buildAuthorizationUrl({ authorizationUrl, clientConfig: config, now })
+      : authorizationUrl.toString();
+
     return {
-      authorizationUrl: authorizationUrl.toString(),
+      authorizationUrl: resolvedAuthorizationUrl,
       pending,
     };
   }
@@ -267,7 +282,7 @@ export class OAuthFlowService {
         );
       }
 
-      const redirectUri = this.clientConfigs.expectedRedirectUri(pending.service);
+      const redirectUri = pending.redirectUri ?? this.clientConfigs.expectedRedirectUri(pending.service, config);
       const tokenUrl = this.clientConfigs.resolveEndpointUrl(pending.service, auth.tokenUrl, config);
       const createError = (message: string): OAuthFlowError =>
         new OAuthFlowError("oauth_token_exchange_failed", message);
@@ -276,6 +291,7 @@ export class OAuthFlowService {
       if (providerOAuth?.exchangeCode) {
         tokenResponse = await providerOAuth.exchangeCode({
           code: input.code,
+          callbackParameters: input.callbackParameters,
           clientConfig: config,
           redirectUri,
           tokenUrl,
@@ -301,6 +317,7 @@ export class OAuthFlowService {
         });
       }
       const refreshParameters = readCallbackParameters(auth.tokenRequestCallbackParameters, input.callbackParameters);
+      const providerSecret = mergeOAuthProviderSecret(tokenResponse.providerSecret, refreshParameters);
       const oauthCredential = {
         authType: "oauth2" as const,
         ...tokenResponse,
@@ -309,10 +326,11 @@ export class OAuthFlowService {
           displayName: "OAuth Credential",
           grantedScopes: request ? [] : (pending.authorizationScopes ?? []),
         },
-        providerSecret:
-          Object.keys(refreshParameters).length > 0 ? { oauthRefreshParameters: refreshParameters } : undefined,
+        providerSecret,
         metadata: {
           ...tokenResponse.metadata,
+          // Bind the stored credential to the callback that completed this consent.
+          oauthAuthorizationId: pending.state,
           oauthClientId: config.clientId,
           oauthClientExtra: config.extra,
           oauthClientSecretExtra: config.secretExtra,
@@ -387,6 +405,19 @@ export class OAuthFlowService {
     }
     return this.clientConfigs.normalizeConfig(service, input);
   }
+}
+
+function mergeOAuthProviderSecret(
+  providerSecret: Record<string, unknown> | undefined,
+  refreshParameters: Record<string, string>,
+): Record<string, unknown> | undefined {
+  if (Object.keys(refreshParameters).length === 0) {
+    return providerSecret;
+  }
+  return {
+    ...providerSecret,
+    oauthRefreshParameters: refreshParameters,
+  };
 }
 
 function setAuthorizationParam(
@@ -467,8 +498,10 @@ export class OAuthFlowError extends Error {
 }
 
 export interface OAuthConnectionRequestInput {
+  connectionName?: string;
   service: string;
   owner: string;
+  signal?: AbortSignal;
   target?: StoredConnection;
   returnUri?: string;
   authorizationOptionIds?: string[];
@@ -484,7 +517,7 @@ export interface OAuthConnectionRequestStart {
   expiresAt: string;
 }
 
-function validateReturnUri(value?: string): void {
+export function validateReturnUri(value?: string): void {
   if (!value) return;
   let url: URL;
   try {
@@ -506,8 +539,8 @@ export class OAuthCallbackError extends OAuthFlowError {
   }
 }
 
-function callbackReturnUri(
-  pending: PendingConnectionRequest,
+export function callbackReturnUri(
+  pending: Pick<PendingConnectionRequest, "returnUri" | "service">,
   status: "success" | "error",
   code?: string,
   message?: string,

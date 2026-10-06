@@ -8,6 +8,7 @@ const action: ActionDefinition = {
   service: "github",
   name: "create_issue",
   description: "Create an issue.",
+  operationType: "write",
   requiredScopes: [],
   providerPermissions: [],
   inputSchema: { type: "object" },
@@ -377,5 +378,35 @@ describe("ActionPolicyService", () => {
       code: "connection_not_allowed",
     });
     expect(snapshot.evaluateConnection(workConnectionId)).toMatchObject({ allowed: true });
+  });
+});
+
+describe("Trigger policy", () => {
+  const rules = { allowedActions: [], blockedActions: [], allowedProxies: [], blockedProxies: [] };
+  it("grants Triggers independently and denies legacy tokens by default", () => {
+    const service = new ActionPolicyService();
+    expect(
+      service.createSnapshot(rules, { ...rules, allowedProxies: ["*"] }).evaluateTrigger("github.on_repo_event"),
+    ).toMatchObject({ allowed: false, code: "trigger_not_allowed" });
+    const token = { ...rules, blockedActions: ["*"], allowedTriggers: ["github.on_repo_event"] };
+    expect(service.createSnapshot(rules, token).evaluateTrigger("github.on_repo_event").allowed).toBe(true);
+    expect(service.createSnapshot(rules, token).evaluateTrigger("github.watch_pull_request").allowed).toBe(false);
+    expect(service.createSnapshot(rules, token).evaluateProxy("github").allowed).toBe(false);
+    expect(service.createSnapshot(rules, token).evaluate(action).allowed).toBe(false);
+  });
+  it("intersects deployment and runtime grants and gives block rules priority", () => {
+    const service = new ActionPolicyService({ allowedTriggers: ["gmail.*"] });
+    const token = { ...rules, allowedTriggers: ["*"] };
+    expect(
+      service
+        .createSnapshot({ ...rules, blockedTriggers: ["github.*"] }, token)
+        .evaluateTrigger("github.on_repo_event"),
+    ).toMatchObject({ allowed: false, code: "trigger_blocked" });
+    expect(
+      service
+        .createSnapshot({ ...rules, allowedTriggers: ["gmail.other"] }, token)
+        .evaluateTrigger("gmail.on_message_received"),
+    ).toMatchObject({ allowed: false, code: "trigger_not_allowed" });
+    expect(service.createSnapshot(rules, token).evaluateTrigger("gmail.on_message_received").allowed).toBe(true);
   });
 });

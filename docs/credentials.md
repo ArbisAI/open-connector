@@ -19,6 +19,14 @@ PostgreSQL database instead; see [configuration](configuration.md#runtime-databa
 - `api_key` and `custom_credential` providers store their local secrets in the selected runtime database.
 - `oauth2` providers use user-provided OAuth client configuration and a runtime callback URL.
 
+## SaaS OAuth credentials
+
+A SaaS OAuth connection stores a remote account reference instead of a local OAuth credential.
+Provider tokens and app secrets remain on SaaS; Connect encrypts the project API key and sensitive
+authorization request data. Encryption and an explicit public origin are required before configuring
+a project. See [SaaS OAuth](saas-oauth.md) for configuration, execution boundaries and outage handling,
+and [maintenance](saas-maintenance.md) for backup restoration versus independent clone reset.
+
 ## Encryption
 
 Set `OOMOL_CONNECT_ENCRYPTION_KEY` to encrypt stored credentials, OAuth client configuration,
@@ -76,6 +84,11 @@ its validator stores a stable connection profile:
 The runtime exposes this profile in `/api/connections`, MCP action discovery, action agent guides,
 and recent run logs. Agents should use it to understand which account an action will run as; raw
 provider tokens are never exposed.
+
+An OAuth connection also carries `oauthAuthorizationId` in `/api/connections`: the `state` of the
+callback that completed its consent. It changes only when a new consent completes, never on token
+refresh, so a caller can tell a fresh grant from the credential it replaced. Connections made
+before this field existed omit it.
 
 Check current connections:
 
@@ -168,6 +181,24 @@ Every requested scope must come from the provider's declared `auth[].scopes`. Th
 unknown scopes instead of silently expanding authorization. Omit `requestedScopes` to keep the
 provider defaults; when present, the array must contain at least one scope. Config summaries expose
 both `requestedScopes` and the resulting `effectiveScopes`.
+
+A provider whose OAuth app is registered with a different redirect URI, for example a native app's
+custom scheme, can save it as `redirectUri` with the client configuration:
+
+```bash
+curl -s -X PUT http://localhost:3000/api/oauth/configs/example \
+  -H 'content-type: application/json' \
+  -d '{"clientId":"...","clientSecret":"...","redirectUri":"myapp://oauth/callback"}'
+```
+
+The value must be an absolute URI without user info or a fragment, and it is sent exactly as saved.
+Custom schemes are accepted; `javascript:`, `vbscript:`, `data:`, `file:`, `blob:`, and `about:` are
+rejected. The authorization request and the code exchange both send it, and `expectedRedirectUri`
+reports it so you can register that value with the provider. Omit it or send an empty string to use
+the runtime callback again; each `PUT` replaces the whole configuration, so include `redirectUri`
+whenever you save the configuration. The runtime's `/oauth/callback` route is unchanged: the app that
+owns the redirect forwards the provider's callback query (`code` and `state`, or `error`) to it.
+Other providers keep the runtime callback.
 
 Some providers declare additional OAuth client fields in `auth[].clientConfigFields`; send those as
 `extra`.

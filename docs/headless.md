@@ -87,6 +87,10 @@ original request URL when you forward.
 `/oauth/callback`, and admin `/api/*`. `connector.close()` aborts in-flight
 work and closes owned storage. It is safe to call more than once.
 
+## Provider Triggers
+
+Provider Triggers use the same headless runtime and selected provider registry as Actions. Grant explicit `allowedTriggers` on a persistent runtime token to manage remote subscriptions; public proxy grants are independent. Runtime shutdown cancels and waits for maintenance. Include the generated catalog and migrations supplied by `getConnectorBuildOptions`; selected-provider builds include only those providers' Trigger executors. See the [Trigger runtime reference](https://github.com/oomol-lab/open-connector/blob/main/docs/runtime-api.md#provider-triggers) for request shapes and cleanup.
+
 ## Connector SDK
 
 [`@oomol-lab/connector`](https://www.npmjs.com/package/@oomol-lab/connector) is
@@ -129,6 +133,33 @@ For Bun executables, include `getConnectorAssetDirectory()` in
 `compile.assets`, with `splitting: true` and `external: ["proxy-agent"]`. Keep
 the asset directory named `open-connector`; package assets resolve
 independently of the working directory.
+
+To include only selected providers, use the build helper:
+
+```ts
+import { getConnectorBuildOptions } from "@oomol-lab/open-connector/build";
+
+const prepared = await getConnectorBuildOptions({ providers: ["github", "slack"] });
+try {
+  await Bun.build({
+    entrypoints: ["./server.ts"],
+    target: "bun",
+    format: "esm",
+    splitting: true,
+    plugins: prepared.plugins,
+    external: prepared.external,
+    compile: { outfile: "./app", assets: prepared.assets },
+  });
+} finally {
+  await prepared.dispose();
+}
+```
+
+Omitting options or `providers` includes all providers; `providers: []` includes
+none. Unknown IDs fail preparation. Selection includes each provider's complete
+executor module and catalog entry, including authentication and action schemas.
+Shared runtime code and migrations remain included. The runtime API is unchanged,
+and the installed npm package still contains all providers.
 
 ## Documentation
 

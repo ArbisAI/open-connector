@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createConnectorRuntime } from "./connector-runtime.ts";
+import { AesGcmSecretCodec } from "./secrets/secret-codec.ts";
+import { SqliteRuntimeDatabase } from "./storage/sqlite/runtime-store.ts";
 
 let runtime: ConnectorRuntime | undefined;
 const directories: string[] = [];
@@ -111,6 +113,64 @@ describe("headless runtime", () => {
     );
   });
 
+  it("carries a configured redirect URI override through setup, the authorize URL and the code exchange", async () => {
+    runtime = await createConnectorRuntime(await fixture());
+    expect((await (await request("/v1/providers/github/setup")).json()).data.oauthClient).toMatchObject({
+      expectedRedirectUri: `${publicOrigin}/oauth/callback`,
+    });
+    const refused = await request(
+      "/api/oauth/configs/github",
+      { clientId: "fixture-client", clientSecret: "fixture-secret", redirectUri: "oauth/callback" },
+      "admin-token",
+      "PUT",
+    );
+    expect(refused.status).toBe(400);
+    await expect(refused.json()).resolves.toMatchObject({ error: { code: "invalid_input" } });
+    const configured = await request(
+      "/api/oauth/configs/github",
+      { clientId: "fixture-client", clientSecret: "fixture-secret", redirectUri: "app://oauth/callback" },
+      "admin-token",
+      "PUT",
+    );
+    expect(configured.status).toBe(200);
+    const setup = (await (await request("/v1/providers/github/setup")).json()).data;
+    // The setup block reports only the effective redirect; the override itself stays on the admin config API.
+    expect(setup.oauthClient).toEqual({
+      configured: true,
+      customClientAvailable: false,
+      expectedRedirectUri: "app://oauth/callback",
+      missingFields: [],
+    });
+    expect(JSON.stringify(setup)).not.toMatch(/fixture-client|fixture-secret/);
+
+    const started = await request("/v1/connections/github/connect", {
+      returnUri: "https://host.example/settings/connections",
+    });
+    expect(started.status).toBe(200);
+    const attempt = (await started.json()).data;
+    const authorization = new URL(attempt.authorizationUrl);
+    expect(authorization.searchParams.get("redirect_uri")).toBe("app://oauth/callback");
+
+    // The callback route is unchanged: the app that owns the scheme forwards the
+    // provider's query here, and the exchange repeats the registered redirect.
+    const fetcher = vi.fn(async (url: RequestInfo | URL, _init?: RequestInit) =>
+      String(url).includes("/login/oauth/access_token")
+        ? Response.json({ access_token: "fixture-access-token", token_type: "bearer", scope: "read:user" })
+        : Response.json({ id: 1, login: "fixture-account", name: "Fixture Account" }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    const callback = await request(
+      `/oauth/callback?state=${encodeURIComponent(authorization.searchParams.get("state")!)}&code=fixture-code`,
+    );
+    expect(callback.status).toBe(302);
+    expect(new URL(callback.headers.get("location")!).searchParams.get("status")).toBe("success");
+    const exchange = fetcher.mock.calls.find(([url]) => String(url).includes("/login/oauth/access_token"));
+    expect(new URLSearchParams(String(exchange?.[1]?.body)).get("redirect_uri")).toBe("app://oauth/callback");
+    expect((await (await request(`/v1/connection-requests/${attempt.connectionRequestId}`)).json()).data.status).toBe(
+      "connected",
+    );
+  });
+
   it("aborts active provider calls before closing storage and rejects requests after close", async () => {
     runtime = await createConnectorRuntime(await fixture());
     vi.stubGlobal("fetch", async () => Response.json({ id: 1, login: "fixture-account" }));
@@ -171,6 +231,53 @@ describe("headless runtime", () => {
     runtime = await createConnectorRuntime(options);
     expect((await request("/v1/health", undefined, "runtime-token")).status).toBe(200);
   });
+});
+
+it("starts persisted cleanup without HTTP traffic and waits for its abort on close", async () => {
+  const options = await fixture();
+  await mkdir(options.dataDir, { recursive: true });
+  const codec = new AesGcmSecretCodec(options.encryptionKey!);
+  let database = new SqliteRuntimeDatabase(join(options.dataDir, "connect.sqlite"), { secretCodec: codec });
+  await database.saasProjectStore.saveProject({
+    id: "managed",
+    projectId: "project",
+    baseUrl: "https://saas.example",
+    apiKey: "project-key",
+  });
+  const lease = await database.connectionRequestStore.createSaas({
+    connectionRequestId: crypto.randomUUID(),
+    connectionId: crypto.randomUUID(),
+    connectionName: "cleanup",
+    owner: "admin",
+    service: "github",
+    managedProjectId: "managed",
+    providerConfigId: "config",
+    externalUserId: "user",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  });
+  await database.connectionRequestStore.saveSaasRequest(lease, "remote");
+  await database.connectionRequestStore.saveSaasCandidate(lease, {
+    connectedAccountId: "account",
+    status: "active",
+    comment: null,
+    profile: { accountId: "user", displayName: "User", grantedScopes: [] },
+  });
+  await database.connectionRequestStore.cancelSaas(lease.pending.connectionRequestId, "admin");
+  database.close();
+  const fetcher = vi.fn<typeof fetch>(() => new Promise(() => {}));
+  vi.stubGlobal("fetch", fetcher);
+  runtime = await createConnectorRuntime(options);
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+  expect(fetcher.mock.calls[0][1]?.method).toBe("DELETE");
+  await runtime.close();
+  expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  database = new SqliteRuntimeDatabase(join(options.dataDir, "connect.sqlite"), { secretCodec: codec });
+  try {
+    expect((await database.saasProjectStore.getCleanupStats()).pending).toBe(1);
+  } finally {
+    database.close();
+  }
 });
 
 async function fixture(): Promise<ConnectorRuntimeOptions> {

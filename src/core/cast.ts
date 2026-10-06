@@ -265,10 +265,13 @@ export function optionalNumber(value: unknown): number | undefined {
 /**
  * Return a finite number from a number or numeric string when present. Examples:
  * `optionalNumberLike("1.5") => 1.5`, `optionalNumberLike("x") => undefined`.
+ *
+ * A blank or whitespace-only string is reported as missing rather than parsed, because
+ * `Number(" ")` is `0` and a blank field would otherwise surface as a real zero.
  */
 export function optionalNumberLike(value: unknown): number | undefined {
   const parsed =
-    typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : Number.NaN;
+    typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
@@ -408,6 +411,22 @@ export function pickOptionalInteger(input: Record<string, unknown>, ...keys: str
  */
 export function nullableString(value: unknown): string | null | undefined {
   return value === null ? null : optionalString(value);
+}
+
+/**
+ * Return a string exactly as provided, null, or undefined when the value is not a string. Examples:
+ * `nullableRawString(null) => null`, `nullableRawString("") => ""`, `nullableRawString(1) => undefined`.
+ */
+export function nullableRawString(value: unknown): string | null | undefined {
+  return value === null ? null : optionalRawString(value);
+}
+
+/**
+ * Return a boolean, null, or undefined when the value is not a boolean. Examples:
+ * `nullableBoolean(null) => null`, `nullableBoolean(false) => false`, `nullableBoolean("true") => undefined`.
+ */
+export function nullableBoolean(value: unknown): boolean | null | undefined {
+  return value === null ? null : optionalBoolean(value);
 }
 
 /**
