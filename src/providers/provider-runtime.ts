@@ -619,12 +619,10 @@ export async function readProviderProxyErrorMessage(response: Response, fallback
     await response.body?.cancel().catch(() => undefined);
     return fallbackMessage;
   }
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: defaultProviderProxyMaxResponseBytes,
-    fieldName: "proxy error response",
-    createError: (message) => new ProviderRequestError(413, message),
-  });
-  return bytes.byteLength === 0 ? fallbackMessage : new TextDecoder().decode(bytes) || fallbackMessage;
+  // Error text is diagnostic and must never turn an upstream failure into a 413
+  // invalid_input. Share the error cap and the empty-on-failure behavior with
+  // readProviderErrorTextBody.
+  return (await readProviderErrorTextBody(response, "proxy error response")) || fallbackMessage;
 }
 
 function isTextProxyContentType(contentType: string): boolean {

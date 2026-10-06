@@ -17,6 +17,7 @@ import {
   ProviderRequestError,
   providerResponseError,
   readProviderJson,
+  readProviderProxyErrorMessage,
   requiredInputString,
   requiredResponseRecord,
   runProviderRequest,
@@ -90,6 +91,20 @@ describe("readProviderJson", () => {
       status: 500,
       message: "provider request failed",
     });
+  });
+});
+
+describe("readProviderProxyErrorMessage", () => {
+  it("keeps a bounded proxy error body", async () => {
+    await expect(
+      readProviderProxyErrorMessage(new Response('{"error":"nope"}', { status: 502 }), "provider request failed"),
+    ).resolves.toBe('{"error":"nope"}');
+  });
+
+  it("falls back when the proxy error body exceeds the shared error cap", async () => {
+    await expect(
+      readProviderProxyErrorMessage(new Response("x".repeat(65 * 1024), { status: 502 }), "provider request failed"),
+    ).resolves.toBe("provider request failed");
   });
 });
 
@@ -819,6 +834,28 @@ describe("provider egress SSRF guard", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.error).toMatchObject({ code: "invalid_input", details: { status: 413 } });
+  });
+
+  it("keeps an oversized proxy error body as a provider error", async () => {
+    stubFetchSequence([
+      new Response("upstream failure", { status: 500, headers: { "content-length": String(21 * 1024 * 1024) } }),
+    ]);
+    const proxy = defineProviderProxy({
+      service: "test_service",
+      baseUrl: "https://api.example.com",
+      auth: { type: "none" },
+    });
+
+    const result = await proxy({ method: "GET", endpoint: "/items" }, executionContext);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "provider_error",
+        details: { status: 500 },
+        message: "provider request failed with HTTP 500",
+      },
+    });
   });
 
   it.each(["text", [], 1])("rejects a non-object JSON auth body: %j", async (body) => {
