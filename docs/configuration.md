@@ -4,6 +4,9 @@ Managed provider actions can be configured through the [Connector Marketplace](m
 
 OpenConnector is configured with environment variables.
 
+Embedding hosts can also configure opt-in [provider HTTP dispatch hooks](provider-http-dispatch.md)
+through runtime options to admit, delay or deny each upstream HTTP attempt.
+
 | Variable                                    | Default                   | Purpose                                                                                                                                                                     |
 | ------------------------------------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `PORT`                                      | `3000`                    | Local HTTP server port.                                                                                                                                                     |
