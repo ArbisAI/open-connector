@@ -1104,7 +1104,11 @@ export function setSearchParams(url: URL, query: Record<string, string | undefin
 export async function readProviderErrorTextBody(response: Response, fieldName: string): Promise<string> {
   try {
     return await readProviderTextBody(response, fieldName, defaultProviderErrorMaxResponseBytes);
-  } catch {
+  } catch (error) {
+    // A size-limit or broken-body failure degrades to the fallback message, but
+    // a timeout or abort must keep propagating so runProviderRequest reports 504
+    // instead of the upstream status the body read was interrupted for.
+    if (isAbortLikeError(error)) throw error;
     return "";
   }
 }

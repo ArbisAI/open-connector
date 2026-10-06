@@ -16,6 +16,7 @@ import {
   providerInputError,
   ProviderRequestError,
   providerResponseError,
+  readProviderErrorTextBody,
   readProviderJson,
   readProviderProxyErrorMessage,
   requiredInputString,
@@ -105,6 +106,45 @@ describe("readProviderProxyErrorMessage", () => {
     await expect(
       readProviderProxyErrorMessage(new Response("x".repeat(65 * 1024), { status: 502 }), "provider request failed"),
     ).resolves.toBe("provider request failed");
+  });
+});
+
+/** A response whose body fails as soon as it is read. */
+function abortingErrorResponse(): Response {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.error(new DOMException("The operation was aborted.", "AbortError"));
+      },
+    }),
+    { status: 502 },
+  );
+}
+
+describe("readProviderErrorTextBody", () => {
+  it("rethrows an abort raised while reading an error body", async () => {
+    await expect(readProviderErrorTextBody(abortingErrorResponse(), "provider error response")).rejects.toMatchObject({
+      name: "AbortError",
+    });
+  });
+
+  it("keeps swallowing a non-abort read failure", async () => {
+    const response = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error("stream broken"));
+        },
+      }),
+      { status: 502 },
+    );
+
+    await expect(readProviderErrorTextBody(response, "provider error response")).resolves.toBe("");
+  });
+
+  it("reports a timeout when reading an error body is aborted", async () => {
+    await expect(
+      runProviderRequest({ label: "provider" }, async () => readProviderJson(abortingErrorResponse(), "provider")),
+    ).rejects.toMatchObject({ status: 504, message: "provider request timed out" });
   });
 });
 
