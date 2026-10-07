@@ -25,7 +25,6 @@ import type { StatementSync } from "node:sqlite";
 import { DatabaseSync } from "node:sqlite";
 import { parseRuntimeActionHttpResult } from "../../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../../secrets/secret-codec-core.ts";
-import { UserConnectionStore } from "../../user-api/user-connection-store.ts";
 import { ConnectionRequestStore } from "../connection-request-store.ts";
 import { SqlConnectionStore } from "../connection-store.ts";
 import { defaultMigrationSource } from "../migration-source.ts";
@@ -98,7 +97,6 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
   readonly runLogStore: SqliteRunLogStore;
   readonly idempotencyStore: SqliteIdempotencyStore;
   readonly marketplaceStore: SqliteMarketplaceStore;
-  readonly userConnectionStore: UserConnectionStore;
 
   private readonly database: DatabaseSync;
   private readonly secretCodec: ISecretCodec;
@@ -122,12 +120,6 @@ export class SqliteRuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new SqliteRunLogStore(this.database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new SqliteIdempotencyStore(this.database, this.secretCodec);
     this.marketplaceStore = new SqliteMarketplaceStore(this.database);
-    // Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
-    this.userConnectionStore = new UserConnectionStore(async (statements) =>
-      runInTransaction(this.database, () =>
-        statements.map(({ sql, values }) => this.database.prepare(sql).all(...values)),
-      ),
-    );
   }
 
   close(): void {
