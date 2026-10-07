@@ -22,6 +22,33 @@ These credentials serve different purposes:
 
 ## 2. Connect a client
 
+### Application-managed connection forms
+
+An authenticated administrator can read `GET /v1/providers/{service}/setup`.
+The additive `authMethods` array contains the application-facing type (`oauth`,
+`api_key`, `custom_credentials`, or `no_auth`), `configured`, `unavailableReason`,
+and provider-defined credential `fields`. For OAuth, `configured` means the
+provider application is configured; it does not mean the end user connected.
+Legacy `auth` and `oauthClient` metadata remain available.
+
+Create a key connection with `POST /v1/connections/{service}/connect/api-key`
+and `{ "apiKey": "...", "extra": { "field": "value" } }`. A backend may supply
+a durable `connectionName` alias to recover a lost response by listing manageable
+connections. Persist that alias before calling the gateway, and resolve an
+existing connection before resending; the create endpoint is not an idempotent
+key-rotation endpoint. Never put user IDs or keys into public aliases.
+
+Replace credentials using `POST /v1/connections/by-id/{appId}/connect/api-key`.
+Failed validation preserves the old credentials. Disconnect using
+`DELETE /v1/connections/by-id/{appId}`. Key validation runs where the provider
+implements a validator; a saved key does not prove access to every resource.
+User ownership must be enforced by the calling application's backend.
+
+For action execution and `/api/actions/{actionId}/agent.md`, select the exact
+account using `x-oo-connector-app-id`. Unknown IDs do not use a default account.
+Management needs administrator credentials; an action runtime token alone
+cannot create or delete connections.
+
 ### MCP: agent clients
 
 Add this server to an MCP client supporting remote HTTP servers and Authorization headers:
@@ -150,3 +177,11 @@ Runtime Token grants the selected Action and connection, and that the provider i
 - [Runtime API and MCP](runtime-api.md)
 - [SDK and CLI reference](sdk-cli.md)
 - [中文接入指南](client-onboarding.zh-CN.md)
+
+## Recovering a named connection
+
+Management clients can use `GET /v1/connections/by-alias/{service}/{alias}` with
+administrator authentication to recover one connection after losing a create response.
+It returns the same safe metadata as the by-ID endpoint and never returns credentials.
+An `app_not_found` error means that exact provider/alias pair is absent;
+other errors must not be interpreted as permission to create a duplicate.

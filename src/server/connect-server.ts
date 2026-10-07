@@ -19,6 +19,8 @@ import type { IIdempotencyStore } from "./storage/idempotency-store.ts";
 import type { IRuntimePolicyStore } from "./storage/runtime-policy-store.ts";
 import type { RunLogCaller, RunLogListInput } from "./storage/runtime-store.ts";
 import type { RuntimeGrant, RuntimeTokenService } from "./storage/runtime-token-service.ts";
+// Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+import type { UserConnectionStore } from "./user-api/user-connection-store.ts";
 import type { Context, MiddlewareHandler } from "hono";
 
 import { Hono } from "hono";
@@ -77,6 +79,8 @@ import { TransitFileError } from "./files/transit-file-store.ts";
 import { ProxyRunner } from "./proxy/proxy-runner.ts";
 import { decodeRunLogCursor } from "./storage/runtime-store.ts";
 import { summarizeRuntimeToken } from "./storage/runtime-token-service.ts";
+// Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+import { createUserConnectionRoutes } from "./user-api/user-connection-routes.ts";
 
 type McpModule = typeof import("../mcp.ts");
 
@@ -144,6 +148,8 @@ export interface IConnectServerOptions {
   auth?: LocalAuthOptions;
   actionPolicy?: ActionPolicyService;
   runtimePolicyStore: IRuntimePolicyStore;
+  /** Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership. */
+  userConnectionStore: UserConnectionStore;
   actionSearch?: ActionSearchIndexProvider;
   registerStaticRoutes?: (app: Hono) => void;
   logger?: RuntimeLogger;
@@ -252,6 +258,8 @@ export class ConnectServer {
     app.get("/v1/actions/:actionId", (context) => this.getRuntimeAction(context, context.req.param("actionId")));
     app.post("/v1/actions/:actionId", (context) => this.createRuntimeActionRun(context, context.req.param("actionId")));
     app.route("/v1", createConnectionRoutes(this.options));
+    // Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
+    app.route("/v1", createUserConnectionRoutes(this.options));
     app.get("/v1/apps", (context) => this.listRuntimeApps(context));
     app.get("/v1/apps/authenticated", (context) => this.listAuthenticatedRuntimeApps(context));
     app.get("/v1/apps/services/:service", (context) =>
@@ -666,10 +674,23 @@ export class ConnectServer {
 
     try {
       const policy = (await this.getPolicySnapshot(context)).evaluate(action);
+      const connectionId = optionalString(context.req.header("x-oo-connector-app-id"));
+      const stored = connectionId ? await this.options.connections.getStoredConnection(connectionId) : undefined;
+      if (stored && stored.service !== action.service) {
+        return jsonError(
+          context,
+          400,
+          "connection_service_mismatch",
+          "The connection belongs to a different provider.",
+        );
+      }
       return context.text(
         renderActionMarkdown(action, {
           transport: { kind: "http", origin: this.options.publicOrigin },
-          connection: await this.options.connections.getConnectionSummary(action.service, readConnectionName(context)),
+          connection: await this.options.connections.getConnectionSummary(
+            action.service,
+            stored?.connectionName ?? readConnectionName(context),
+          ),
           policy,
         }),
         200,

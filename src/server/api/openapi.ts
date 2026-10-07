@@ -1768,6 +1768,17 @@ function connectionManagementPaths(): Record<string, unknown> {
   });
   const setup = jsonSchema.object("Setup requirements and OAuth client state for one provider, without saved values.", {
     service: jsonSchema.string(),
+    authMethods: jsonSchema.array(
+      jsonSchema.object(
+        "Application-facing choices. OAuth configured describes the installed provider app, not a user's connection.",
+        {
+          type: jsonSchema.stringEnum("Sign-in method.", ["oauth", "api_key", "custom_credentials", "no_auth"]),
+          configured: jsonSchema.boolean(),
+          unavailableReason: jsonSchema.nullableString("Why this method is not ready."),
+          fields: jsonSchema.array(field),
+        },
+      ),
+    ),
     auth: jsonSchema.array(
       jsonSchema.object("One supported credential type with its form metadata.", {
         type: jsonSchema.stringEnum("Credential type.", ["no_auth", "api_key", "custom_credential", "oauth2"]),
@@ -1828,11 +1839,33 @@ function connectionManagementPaths(): Record<string, unknown> {
       data: jsonSchema.array(app),
       errorStatuses: [401, 403],
     }),
-    "/v1/connections/by-id/{appId}": runtimeGetOperation("Connections", "Get the current connection state.", {
-      data: app,
-      parameters: [parameter("appId")],
-      errorStatuses: [401, 403, 404],
-    }),
+    "/v1/connections/by-alias/{service}/{alias}": runtimeGetOperation(
+      "Connections",
+      "Find one manageable connection by provider and exact alias.",
+      {
+        data: app,
+        parameters: [parameter("service"), parameter("alias")],
+        errorStatuses: [401, 403, 404],
+      },
+    ),
+    "/v1/connections/by-id/{appId}": {
+      ...runtimeGetOperation("Connections", "Get the current connection state.", {
+        data: app,
+        parameters: [parameter("appId")],
+        errorStatuses: [401, 403, 404],
+      }),
+      delete: {
+        tags: ["Connections"],
+        summary: "Disconnect the exact stored connection without selecting a provider default.",
+        parameters: [parameter("appId")],
+        responses: {
+          200: jsonResponse(runtimeSuccessSchema({ type: "null" })),
+          401: jsonResponse(runtimeFailureSchema()),
+          403: jsonResponse(runtimeFailureSchema()),
+          404: jsonResponse(runtimeFailureSchema()),
+        },
+      },
+    },
     "/v1/connection-requests/{connectionRequestId}": runtimeGetOperation(
       "Connections",
       "Get an OAuth authorization result.",
