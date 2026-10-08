@@ -492,7 +492,7 @@ function createQuickbooksContext(
 }
 
 async function validateCompany(context: QuickbooksContext): Promise<CredentialValidationResult> {
-  const info = await getCompanyInfo(context, "validate");
+  const info = await getCompanyInfo(context);
   return {
     profile: {
       accountId: context.realmId,

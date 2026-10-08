@@ -44,8 +44,6 @@ export interface QuickbooksRequest {
   formData?: FormData;
   /** Return the response as `{ text }` instead of parsing JSON, for endpoints that answer with plain text. */
   responseText?: boolean;
-  /** `validate` turns an upstream 401/403 into a 400 so a connect form shows a field error. */
-  phase?: "validate" | "execute";
 }
 
 /** One page of a query: the rows plus `totalCount` when the statement was a count. */
@@ -93,7 +91,7 @@ export async function quickbooksRequest(
     const intuitTid = response.headers.get("intuit_tid") ?? undefined;
     const fault = optionalRecord(payload?.Fault);
     if (!response.ok || fault) {
-      throw quickbooksError(response, fault, intuitTid, request.phase ?? "execute");
+      throw quickbooksError(response, fault, intuitTid);
     }
     return requiredResponseRecord(payload, "QuickBooks response");
   });
@@ -103,7 +101,6 @@ function quickbooksError(
   response: Response,
   fault: Record<string, unknown> | undefined,
   intuitTid: string | undefined,
-  phase: "validate" | "execute",
 ): ProviderRequestError {
   const errors = looseArray(fault?.Error).map((entry) => optionalRecord(entry) ?? {});
   const described = errors
@@ -142,20 +139,13 @@ function quickbooksError(
   if (status >= 500) {
     return new ProviderRequestError(502, message, details);
   }
-  if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ProviderRequestError(400, message, details);
-  }
-  return new ProviderRequestError(status, message, details);
+  return new ProviderRequestError(status, message, details, "provider_error");
 }
 
 /** GET the connected company's CompanyInfo record. */
-export async function getCompanyInfo(
-  context: QuickbooksContext,
-  phase: "validate" | "execute" = "execute",
-): Promise<Record<string, unknown>> {
+export async function getCompanyInfo(context: QuickbooksContext): Promise<Record<string, unknown>> {
   const payload = await quickbooksRequest(context, {
     path: `companyinfo/${encodePathSegment(context.realmId)}`,
-    phase,
   });
   return requiredResponseRecord(payload.CompanyInfo, "QuickBooks CompanyInfo");
 }

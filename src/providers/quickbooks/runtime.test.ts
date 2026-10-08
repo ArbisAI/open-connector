@@ -386,10 +386,11 @@ describe("QuickBooks credential validation", () => {
     expect(requests[0]!.headers.authorization).toBe("Bearer oauth-token");
   });
 
-  it("turns an upstream 401 into a field error during validation", async () => {
+  it("preserves an unknown upstream 401 without forcing credential recovery during validation", async () => {
     const { context } = createContext(() => jsonResponse({}, { status: 401 }));
     await expect(credentialValidators.oauth2!(oauthCredential, { fetcher: context.fetcher })).rejects.toMatchObject({
-      status: 400,
+      status: 401,
+      code: "provider_error",
     });
   });
 
