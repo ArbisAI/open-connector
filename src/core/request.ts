@@ -1,3 +1,5 @@
+import type { TransitFileUpload, TransitFileWriter } from "./types.ts";
+
 /**
  * Query parameter values accepted by provider HTTP helpers.
  */
@@ -129,6 +131,63 @@ export async function readBoundedResponseBytes(
     offset += chunk.byteLength;
   }
   return bytes;
+}
+
+export interface TransitResponseOptions {
+  /** Name the stored transit file carries. */
+  name: string;
+  mimeType: string;
+  /** Used in the size-limit error, as in {@link readBoundedResponseBytes}. */
+  fieldName: string;
+  createError: (message: string) => Error;
+  signal?: AbortSignal;
+}
+
+/**
+ * Store a provider download in transit storage without holding it in memory.
+ *
+ * A backend that accepts unknown-length streams (the filesystem store) gets the
+ * response body piped straight to disk, so memory stays flat whatever the file
+ * size or the number of concurrent downloads; the store enforces `maxBytes` as
+ * the bytes arrive. Any other backend keeps the buffered path, bounded exactly
+ * as before.
+ */
+export async function storeResponseInTransit(
+  response: Response,
+  transitFiles: TransitFileWriter,
+  options: TransitResponseOptions,
+): Promise<TransitFileUpload> {
+  const limits: BoundedResponseBytesOptions = {
+    maxBytes: transitFiles.maxBytes,
+    fieldName: options.fieldName,
+    createError: options.createError,
+    signal: options.signal,
+  };
+  if (!transitFiles.createFromStream || !response.body) {
+    const bytes = await readBoundedResponseBytes(response, limits);
+    return await transitFiles.create(new File([Uint8Array.from(bytes)], options.name, { type: options.mimeType }));
+  }
+  options.signal?.throwIfAborted();
+  const contentLength = parseContentLength(response.headers.get("content-length"));
+  if (contentLength !== undefined && contentLength > limits.maxBytes) {
+    void response.body.cancel().catch(() => undefined);
+    assertMaxBytes(contentLength, limits);
+  }
+  try {
+    return await transitFiles.createFromStream({
+      body: response.body,
+      name: options.name,
+      mimeType: options.mimeType,
+      signal: options.signal,
+    });
+  } catch (error) {
+    // The store reports an over-limit stream as its own `file_too_large`;
+    // callers keep seeing the error they chose, as on the buffered path.
+    if ((error as { code?: unknown } | null)?.code === "file_too_large") {
+      throw options.createError(`${options.fieldName} exceeds ${limits.maxBytes} bytes`);
+    }
+    throw error;
+  }
 }
 
 // Egress targets are classified into three tiers for the SSRF guard:

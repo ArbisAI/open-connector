@@ -10,6 +10,7 @@ import {
   parseEgressTrustedHosts,
   parsePrivateNetworkAccessFlag,
   readBoundedResponseBytes,
+  storeResponseInTransit,
   setEgressTrustedHosts,
   setPrivateNetworkAccessAllowed,
 } from "./request.ts";
@@ -357,5 +358,83 @@ describe("trusted egress hosts", () => {
   it("trusts no hosts by default", () => {
     expect(isEgressTrustedHost("open.feishu.cn")).toBe(false);
     expect(isEgressTrustedHost("")).toBe(false);
+  });
+});
+
+describe("storeResponseInTransit", () => {
+  type Stored = { via: "stream" | "file"; bytes: Uint8Array; name: string; mimeType: string };
+
+  function store(options: { maxBytes: number; streaming: boolean; tooLargeAt?: number }) {
+    const stored: Stored[] = [];
+    const upload = (bytes: number) => ({ fileId: "f", downloadUrl: "http://t/f", sizeBytes: bytes }) as never;
+    const writer = {
+      maxBytes: options.maxBytes,
+      async create(file: File) {
+        stored.push({
+          via: "file",
+          bytes: new Uint8Array(await file.arrayBuffer()),
+          name: file.name,
+          mimeType: file.type,
+        });
+        return upload(file.size);
+      },
+      createFromStream: options.streaming
+        ? async (file: { body: ReadableStream<Uint8Array>; name: string; mimeType: string }) => {
+            const chunks: number[] = [];
+            for await (const chunk of file.body as unknown as AsyncIterable<Uint8Array>) {
+              chunks.push(...chunk);
+              if (options.tooLargeAt !== undefined && chunks.length > options.tooLargeAt) {
+                throw Object.assign(new Error("Transit file too large"), { code: "file_too_large" });
+              }
+            }
+            stored.push({ via: "stream", bytes: Uint8Array.from(chunks), name: file.name, mimeType: file.mimeType });
+            return upload(chunks.length);
+          }
+        : undefined,
+      read: async () => {
+        throw new Error("unused");
+      },
+      delete: async () => false,
+    };
+    return { stored, writer };
+  }
+
+  const options = {
+    name: "report.pdf",
+    mimeType: "application/pdf",
+    fieldName: "Test download",
+    createError: (message: string) => Object.assign(new Error(message), { status: 413 }),
+  };
+
+  it("pipes the body to a streaming backend instead of buffering it", async () => {
+    const { stored, writer } = store({ maxBytes: 1024, streaming: true });
+    const upload = await storeResponseInTransit(new Response(new Uint8Array([1, 2, 3])), writer, options);
+    expect(stored).toEqual([
+      { via: "stream", bytes: new Uint8Array([1, 2, 3]), name: "report.pdf", mimeType: "application/pdf" },
+    ]);
+    expect(upload.sizeBytes).toBe(3);
+  });
+
+  it("keeps the bounded buffered path for backends without streaming", async () => {
+    const { stored, writer } = store({ maxBytes: 1024, streaming: false });
+    await storeResponseInTransit(new Response(new Uint8Array([4, 5])), writer, options);
+    expect(stored.map((s) => [s.via, [...s.bytes]])).toEqual([["file", [4, 5]]]);
+  });
+
+  it("refuses a declared length over the limit before reading the body", async () => {
+    const { stored, writer } = store({ maxBytes: 2, streaming: true });
+    const response = new Response(new Uint8Array([1, 2, 3]), { headers: { "content-length": "3" } });
+    await expect(storeResponseInTransit(response, writer, options)).rejects.toMatchObject({
+      message: "Test download exceeds 2 bytes",
+      status: 413,
+    });
+    expect(stored).toEqual([]);
+  });
+
+  it("reports the store's own over-limit refusal as the caller's error", async () => {
+    const { writer } = store({ maxBytes: 2, streaming: true, tooLargeAt: 2 });
+    await expect(
+      storeResponseInTransit(new Response(new Uint8Array([1, 2, 3])), writer, options),
+    ).rejects.toMatchObject({ message: "Test download exceeds 2 bytes", status: 413 });
   });
 });
