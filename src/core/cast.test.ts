@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   base64Bytes,
   booleanString,
+  integer,
   looseArray,
   nullableBoolean,
   nullableRawString,
+  optionalIntegerLike,
   optionalIntegerOrNull,
   optionalNumberLike,
   optionalStringArray,
+  pickOptionalInteger,
   positiveInteger,
   rawStringOrNull,
   recordOrEmpty,
@@ -57,6 +60,32 @@ describe("cast helpers", () => {
     expect(optionalIntegerOrNull(0)).toBe(0);
     expect(optionalIntegerOrNull("0")).toBe(0);
     expect(optionalIntegerOrNull("2.5")).toBeNull();
+  });
+
+  it("treats whitespace-only optional integers as missing", () => {
+    expect(optionalIntegerLike("", "count")).toBeUndefined();
+    expect(optionalIntegerLike("   ", "count")).toBeUndefined();
+    expect(optionalIntegerLike("\t\n", "count")).toBeUndefined();
+  });
+
+  it("preserves present optional integers including zero and padded values", () => {
+    expect(optionalIntegerLike(0, "count")).toBe(0);
+    expect(optionalIntegerLike("0", "count")).toBe(0);
+    expect(optionalIntegerLike(2, "count")).toBe(2);
+    expect(optionalIntegerLike(" 2 ", "count")).toBe(2);
+    expect(() => optionalIntegerLike("2.5", "count")).toThrow("count must be an integer");
+  });
+
+  it("rejects a whitespace-only required integer instead of reading it as zero", () => {
+    expect(integer(" 2 ", "count")).toBe(2);
+    expect(() => integer("   ", "count")).toThrow("count must be an integer");
+    expect(() => integer("", "count")).toThrow("count must be an integer");
+  });
+
+  it("skips a blank integer when picking from a record", () => {
+    expect(pickOptionalInteger({ count: "   " }, "count")).toBeUndefined();
+    expect(pickOptionalInteger({ count: "   ", fallback: "3" }, "count", "fallback")).toBe(3);
+    expect(pickOptionalInteger({ count: " 4 " }, "count")).toBe(4);
   });
 
   it("rejects zero for positive integer strings", () => {

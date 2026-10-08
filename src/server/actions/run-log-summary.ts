@@ -22,6 +22,7 @@ const safeErrorMessages: Record<string, string> = {
   invalid_input: "The action input was invalid.",
   oauth_refresh_unavailable: "The OAuth credential could not be refreshed.",
   oauth_token_expired: "The OAuth credential has expired.",
+  oauth_token_refresh_failed: "The OAuth credential could not be refreshed.",
   provider_error: "The provider request failed.",
   rate_limited: "The provider rate limit was reached.",
   execution_cancelled: "Action execution was cancelled; remote side effects may have completed.",

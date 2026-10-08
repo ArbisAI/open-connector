@@ -619,12 +619,10 @@ export async function readProviderProxyErrorMessage(response: Response, fallback
     await response.body?.cancel().catch(() => undefined);
     return fallbackMessage;
   }
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: defaultProviderProxyMaxResponseBytes,
-    fieldName: "proxy error response",
-    createError: (message) => new ProviderRequestError(413, message),
-  });
-  return bytes.byteLength === 0 ? fallbackMessage : new TextDecoder().decode(bytes) || fallbackMessage;
+  // Error text is diagnostic and must never turn an upstream failure into a 413
+  // invalid_input. Share the error cap and the empty-on-failure behavior with
+  // readProviderErrorTextBody.
+  return (await readProviderErrorTextBody(response, "proxy error response")) || fallbackMessage;
 }
 
 function isTextProxyContentType(contentType: string): boolean {
@@ -1103,10 +1101,21 @@ export function setSearchParams(url: URL, query: Record<string, string | undefin
 /**
  * Read a bounded provider error response body as text.
  */
-export async function readProviderErrorTextBody(response: Response, fieldName: string): Promise<string> {
+export async function readProviderErrorTextBody(
+  response: Response,
+  fieldName: string,
+  signal?: AbortSignal,
+): Promise<string> {
   try {
-    return await readProviderTextBody(response, fieldName, defaultProviderErrorMaxResponseBytes);
-  } catch {
+    return await readProviderTextBody(response, fieldName, defaultProviderErrorMaxResponseBytes, signal);
+  } catch (error) {
+    // A size-limit or broken-body failure degrades to the fallback message, but
+    // a timeout, abort, or the caller's own abort reason must keep propagating
+    // so runProviderRequest reports 504 instead of the upstream status the body
+    // read was interrupted for. `AbortSignal.abort(reason)` accepts arbitrary
+    // reasons, which `isAbortLikeError` alone cannot recognize.
+    if (signal?.aborted) throw signal.reason;
+    if (isAbortLikeError(error)) throw error;
     return "";
   }
 }
@@ -1192,11 +1201,13 @@ export async function readProviderTextBody(
   response: Response,
   fieldName: string,
   maxBytes: number = defaultProviderJsonMaxResponseBytes,
+  signal?: AbortSignal,
 ): Promise<string> {
   const bytes = await readBoundedResponseBytes(response, {
     maxBytes,
     fieldName,
     createError: (message) => new ProviderRequestError(413, message),
+    signal,
   });
   return new TextDecoder().decode(bytes);
 }
@@ -1243,6 +1254,7 @@ export async function uploadProviderUrlToTransitFile(
   if (!context.transitFiles) {
     return null;
   }
+  const transitFiles = context.transitFiles;
 
   let response: Response;
   try {
@@ -1254,6 +1266,9 @@ export async function uploadProviderUrlToTransitFile(
       signal: context.signal,
     });
   } catch (error) {
+    if (isAbortLikeError(error) || isAbortSignalError(context.signal, error)) {
+      throw new ProviderRequestError(504, `${input.source} transit download timed out`);
+    }
     throw new ProviderRequestError(
       502,
       error instanceof Error
@@ -1261,8 +1276,23 @@ export async function uploadProviderUrlToTransitFile(
         : `${input.source} transit download failed`,
     );
   }
+  // An abort that lands after the response headers arrive rejects the body read
+  // outside the fetch catch above, so map it here too.
+  const readTransitBody = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (isAbortLikeError(error) || isAbortSignalError(context.signal, error)) {
+        throw new ProviderRequestError(504, `${input.source} transit download timed out`);
+      }
+      throw error;
+    }
+  };
+
   if (!response.ok) {
-    const text = await readProviderErrorTextBody(response, `${input.source} error response`);
+    const text = await readTransitBody(() =>
+      readProviderErrorTextBody(response, `${input.source} error response`, context.signal),
+    );
     throw new ProviderRequestError(
       response.status >= 500 ? 502 : response.status,
       text || `${input.source} transit download failed with HTTP ${response.status}`,
@@ -1270,12 +1300,15 @@ export async function uploadProviderUrlToTransitFile(
   }
 
   const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
-    fieldName: input.name,
-    createError: (message) => new ProviderRequestError(413, message),
-  });
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], input.name, { type: mimeType }));
+  const bytes = await readTransitBody(() =>
+    readBoundedResponseBytes(response, {
+      maxBytes: transitFiles.maxBytes,
+      fieldName: input.name,
+      createError: (message) => new ProviderRequestError(413, message),
+      signal: context.signal,
+    }),
+  );
+  const upload = await transitFiles.create(new File([Uint8Array.from(bytes)], input.name, { type: mimeType }));
   return {
     fileId: upload.fileId,
     downloadUrl: upload.downloadUrl,

@@ -282,7 +282,11 @@ export function mapConnectionErrorStatus(error: ConnectionError): 400 | 404 | 40
   if (error.code === "unknown_service" || error.code === "connection_not_found") {
     return 404;
   }
-  if (error.code === "oauth_token_expired" || error.code === "oauth_refresh_unavailable") {
+  if (
+    error.code === "oauth_token_expired" ||
+    error.code === "oauth_refresh_unavailable" ||
+    error.code === "oauth_token_refresh_failed"
+  ) {
     return 409;
   }
   return 400;
@@ -316,7 +320,7 @@ function mapExecutionErrorStatus(code: string | undefined, details?: unknown): R
   if (code === "internal_error" || code === "provider_error" || code === "executor_unavailable") {
     return 500;
   }
-  if (code === "oauth_token_expired" || code === "oauth_refresh_unavailable") {
+  if (code === "oauth_token_expired" || code === "oauth_refresh_unavailable" || code === "oauth_token_refresh_failed") {
     return 409;
   }
   if (code === "connection_not_found" || code === "unknown_service" || code === "unknown_action") {

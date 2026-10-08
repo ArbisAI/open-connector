@@ -297,6 +297,210 @@ describe("Native Trigger provider transport and pagination contracts", () => {
     expect(calls.filter((url) => url.pathname === "/drive/v3/channels/stop")).toHaveLength(2);
   });
 
+  it.each(["server error", "lost response"])(
+    "retries Google Drive channel creation after %s and retains late callbacks",
+    async (failure) => {
+      let watchAttempts = 0;
+      let failStop = true;
+      const watchRequests: { id: string; token: string; expiration: string }[] = [];
+      const stoppedIds: string[] = [];
+      respond((url, init) => {
+        if (url.pathname === "/drive/v3/changes/startPageToken") return { startPageToken: "initial-page" };
+        if (url.pathname === "/drive/v3/changes/watch") {
+          watchAttempts += 1;
+          const body = JSON.parse(String(init?.body)) as { id: string; token: string; expiration: string };
+          watchRequests.push(body);
+          if (watchAttempts <= 2) {
+            if (failure === "lost response") throw new Error("Watch response was lost after remote creation");
+            return new Response(JSON.stringify({ error: { errors: [{ reason: "backendError" }] } }), { status: 500 });
+          }
+          return { id: body.id, expiration: body.expiration, resourceId: "remote-resource" };
+        }
+        if (url.pathname === "/drive/v3/channels/stop") {
+          const body = JSON.parse(String(init?.body)) as { id: string; resourceId: string };
+          if (body.id === watchRequests[0]!.id && failStop) {
+            failStop = false;
+            return new Response("Temporary stop failure", { status: 500 });
+          }
+          stoppedIds.push(body.id);
+          return {};
+        }
+        throw new Error(`Unexpected Google Drive request: ${url}`);
+      });
+
+      let checkpoint: JsonValue = null;
+      let subscription: Readonly<Record<string, JsonValue>> = { channels: [] };
+      let reconcileAt: Date | undefined;
+      const state: IntegrationStateContext = {
+        get checkpoint() {
+          return checkpoint;
+        },
+        get subscription() {
+          return subscription;
+        },
+        async saveCheckpoint(value) {
+          checkpoint = value;
+        },
+        async saveSubscription(value, nextReconcileAt) {
+          subscription = value;
+          reconcileAt = nextReconcileAt;
+        },
+      };
+      const start = new Date("2026-10-01T00:00:00.000Z");
+      const context = (now: Date) => ({
+        active: true,
+        config: resolveTriggerConfig(googleDriveChanges.snapshot.configInputs, {}),
+        connector: transport(driveProxy),
+        now,
+        state,
+        endpointUrl: "https://flow.example/callback",
+        callbackSecret: "callback-secret",
+        idempotencyKey: "binding-key",
+      });
+
+      // Two consecutive transient failures leave two channels that never received a
+      // resourceId, so both are unresolved in the channel state.
+      const first = start.getTime();
+      await expect(googleDriveChanges.reconcile(context(new Date(first)))).rejects.toThrow();
+      const second = first + 60_000;
+      await expect(googleDriveChanges.reconcile(context(new Date(second)))).rejects.toThrow();
+      expect(watchAttempts).toBe(2);
+
+      // The unresolved-channel cap must back off for a short retry window rather
+      // than the multi-day channel lifetime, or the subscription stops watching.
+      const third = second + 60_000;
+      expect(await googleDriveChanges.reconcile(context(new Date(third)))).toEqual({ outcome: "pending" });
+      // Both uncertain attempts remain available for late notifications.
+      expect(subscription.channels).toHaveLength(2);
+      expect(reconcileAt).toBeDefined();
+      expect(reconcileAt!.getTime()).toBe(first + 10 * 60_000);
+
+      // Releasing a retry slot must not discard an uncertain remote channel.
+      expect(await googleDriveChanges.reconcile(context(reconcileAt!))).toEqual({ outcome: "ready" });
+      expect(watchAttempts).toBe(3);
+      expect(subscription.channels).toHaveLength(3);
+      expect(subscription.channels).toEqual(
+        expect.arrayContaining([expect.objectContaining({ resourceId: "remote-resource", state: "active" })]),
+      );
+
+      // Expired retry windows must not wake a healthy subscription in a busy loop.
+      const lateTime = new Date(first + 11 * 60_000);
+      expect(await googleDriveChanges.reconcile(context(lateTime))).toEqual({ outcome: "ready" });
+      expect(watchAttempts).toBe(3);
+      expect(reconcileAt!.getTime()).toBeGreaterThan(lateTime.getTime());
+
+      const original = watchRequests[0]!;
+      const headers: Record<string, string> = {
+        "x-goog-channel-id": original.id,
+        "x-goog-channel-token": original.token,
+        "x-goog-resource-id": "late-resource",
+        "x-goog-resource-state": "sync",
+      };
+      expect(
+        await googleDriveChangeListener.receive({
+          ...context(lateTime),
+          admit: true,
+          current: true,
+          bindingId: "binding-key",
+          method: "POST",
+          payload: null,
+          rawBody: new Uint8Array(),
+          query: () => undefined,
+          header: (name) => headers[name],
+        }),
+      ).toEqual({ outcome: "wake" });
+      expect(subscription.channels).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: original.id, resourceId: "late-resource", state: "retiring" }),
+        ]),
+      );
+
+      // A failed stop keeps the old channel tracked and schedules a cleanup retry.
+      expect(await googleDriveChanges.reconcile(context(lateTime))).toEqual({ outcome: "ready" });
+      expect(reconcileAt!.getTime()).toBe(lateTime.getTime() + 60_000);
+      expect(stoppedIds).not.toContain(original.id);
+      expect(await googleDriveChanges.reconcile(context(reconcileAt!))).toEqual({ outcome: "ready" });
+      expect(stoppedIds).toContain(original.id);
+      expect(subscription.channels).toHaveLength(2);
+      expect(watchAttempts).toBe(3);
+
+      // Retirement waits for the remaining unknown channel's actual expiration.
+      expect(await googleDriveChanges.reconcile({ ...context(new Date(first + 13 * 60_000)), active: false })).toEqual({
+        outcome: "pending",
+      });
+      expect(subscription.channels).toHaveLength(1);
+      expect(reconcileAt!.getTime()).toBe(Number(watchRequests[1]!.expiration));
+      expect(await googleDriveChanges.reconcile({ ...context(reconcileAt!), active: false })).toEqual({
+        outcome: "ready",
+      });
+      expect(subscription.channels).toEqual([]);
+      expect(watchAttempts).toBe(3);
+    },
+  );
+
+  it.each(["renewing", "healthy", "retiring"])(
+    "schedules Google Drive %s channels independently from expired retry windows",
+    async (mode) => {
+      let subscription: Readonly<Record<string, JsonValue>> = {
+        channels: [
+          {
+            id: "old-unknown",
+            state: "retiring",
+            createdAt: new Date(now.getTime() - 20 * 60_000).toISOString(),
+            expiration: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+          },
+          ...[2, 1].map((minutes) => ({
+            id: `recent-${minutes}`,
+            state: "retiring",
+            createdAt: new Date(now.getTime() - minutes * 60_000).toISOString(),
+            expiration: new Date(now.getTime() + 24 * 60 * 60_000).toISOString(),
+          })),
+          ...(mode === "retiring"
+            ? []
+            : [
+                {
+                  id: "active",
+                  resourceId: "active-resource",
+                  state: "active",
+                  createdAt: new Date(now.getTime() - 24 * 60 * 60_000).toISOString(),
+                  expiration: new Date(now.getTime() + (mode === "healthy" ? 120 : 30) * 60_000).toISOString(),
+                },
+              ]),
+        ],
+      };
+      let reconcileAt: Date | undefined;
+      const state: IntegrationStateContext = {
+        checkpoint: { pageToken: "initial-page" },
+        get subscription() {
+          return subscription;
+        },
+        async saveCheckpoint() {},
+        async saveSubscription(value, nextReconcileAt) {
+          subscription = value;
+          reconcileAt = nextReconcileAt;
+        },
+      };
+      const execute = vi.fn(() => {
+        throw new Error("No remote request is due");
+      });
+      const result = await googleDriveChanges.reconcile({
+        active: mode !== "retiring",
+        config: resolveTriggerConfig(googleDriveChanges.snapshot.configInputs, {}),
+        connector: { execute },
+        now,
+        state,
+        endpointUrl: "https://flow.example/callback",
+        callbackSecret: "callback-secret",
+        idempotencyKey: "binding-key",
+      });
+      expect(result).toEqual({ outcome: mode === "retiring" ? "pending" : "ready" });
+      const delayMinutes = mode === "renewing" ? 8 : mode === "healthy" ? 60 : 24 * 60;
+      expect(reconcileAt!.getTime()).toBe(now.getTime() + delayMinutes * 60_000);
+      expect(subscription.channels).toHaveLength(mode === "retiring" ? 3 : 4);
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
   it.each<Record<string, JsonValue>>([{}, { maxRecordsPerPoll: 37 }, { maxRecordsPerPoll: 1000 }])(
     "drains Airtable backlog within the page budget with %j",
     async (limits) => {

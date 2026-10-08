@@ -822,6 +822,13 @@ describe("ConnectServer", () => {
       headers: { authorization: "Bearer local-token" },
     });
     expect(runtimeUnauthorized.status).toBe(401);
+    await expect(runtimeUnauthorized.json()).resolves.toEqual({
+      success: false,
+      message: "A valid local bearer token is required.",
+      data: null,
+      errorCode: "unauthorized",
+      meta: {},
+    });
 
     const runtimeAuthorized = await app.request("/v1/actions", {
       headers: { authorization: "Bearer runtime-token" },
@@ -3325,7 +3332,15 @@ describe("ConnectServer", () => {
       body: JSON.stringify({ input: { message: "hello" } }),
     };
 
-    expect((await app.request("/v1/actions/example.echo", request)).status).toBe(500);
+    const failed = await app.request("/v1/actions/example.echo", request);
+    expect(failed.status).toBe(500);
+    await expect(failed.json()).resolves.toEqual({
+      success: false,
+      message: "Internal server error.",
+      data: null,
+      errorCode: "internal_error",
+      meta: {},
+    });
     const duplicate = await app.request("/v1/actions/example.echo", request);
     expect(duplicate.status).toBe(409);
     await expect(duplicate.json()).resolves.toMatchObject({

@@ -414,7 +414,7 @@ export const extraActions: ActionDefinition[] = [
   }),
   defineProviderAction(service, {
     name: "batch",
-    operationType: "write",
+    operationType: "destructive",
     requiredScopes,
     description:
       "Run up to 30 operations in one request. Each item is either a read-only query or a create, update or delete of one entity. Items do not roll back each other when one fails.",
@@ -480,7 +480,7 @@ export const extraActions: ActionDefinition[] = [
         end_date: s.describe(isoDate, "Last day of the report period."),
         accounting_method: s.stringEnum(["Cash", "Accrual"]),
         summarize_column_by: s.string("How columns are broken out, such as Month or Customers."),
-        parameters: s.unknownObject("Extra report query parameters by name, such as `customer` or `minorversion`."),
+        parameters: s.unknownObject("Extra report query parameters by name, such as `customer`."),
       },
       { required: ["report_name"] },
     ),

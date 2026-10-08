@@ -468,7 +468,7 @@ export class ConnectServer {
         },
         "request failed",
       );
-      if (context.req.path.startsWith("/v1/connections") || context.req.path.startsWith("/v1/connection-requests")) {
+      if (context.req.path.startsWith("/v1/")) {
         return writeRuntimeFailure(context, {
           status: 500,
           errorCode: "internal_error",
