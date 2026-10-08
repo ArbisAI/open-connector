@@ -120,6 +120,59 @@ describe("OAuthCredentialRefreshService", () => {
     expect(refreshed.expiresAt).toBe(new Date(now + 3600_000).toISOString());
   });
 
+  it("keeps the stored lifetime when a provider runtime reports only an expiry", async () => {
+    const providerLoader = new ProviderLoader({
+      example: async () => ({
+        executors: {},
+        oauth: {
+          async refreshAccessToken() {
+            return {
+              accessToken: "provider-refreshed-token",
+              tokenType: "Bearer",
+              expiresAt: "2026-12-29T00:00:00.000Z",
+              metadata: { refreshedBy: "provider-runtime" },
+            };
+          },
+        },
+      }),
+    });
+
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs, providerLoader).refresh(
+      "example",
+      expiredCredential({ expires_in: 3600 }),
+    );
+
+    expect(refreshed.metadata.expires_in).toBe(3600);
+    expect(refreshed.expiresAt).toBe("2026-12-29T00:00:00.000Z");
+  });
+
+  it("prefers the lifetime a provider runtime reports without an expiry", async () => {
+    const now = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const providerLoader = new ProviderLoader({
+      example: async () => ({
+        executors: {},
+        oauth: {
+          async refreshAccessToken() {
+            return {
+              accessToken: "provider-refreshed-token",
+              tokenType: "Bearer",
+              metadata: { expires_in: 120 },
+            };
+          },
+        },
+      }),
+    });
+
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs, providerLoader).refresh(
+      "example",
+      expiredCredential({ expires_in: 3600 }),
+    );
+
+    expect(refreshed.metadata.expires_in).toBe(120);
+    expect(refreshed.expiresAt).toBe(new Date(now + 120_000).toISOString());
+  });
+
   it("refreshes through a provider OAuth runtime and preserves connection identity", async () => {
     let receivedMetadata: Record<string, unknown> | undefined;
     let receivedProviderSecret: Record<string, unknown> | undefined;
