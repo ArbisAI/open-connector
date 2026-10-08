@@ -1304,3 +1304,194 @@ describe("Slack conversation and user extra fields", () => {
     }
   });
 });
+
+describe("Slack reactions list", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const context: ExecutionContext = { getCredential: async () => apiKeyCredential("xoxp-user-token") };
+  const execute = slackExecutors["slack.list_reactions"]!;
+
+  it("passes user, limit, cursor and full to reactions.list and normalizes each item", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const target = new URL(input.toString());
+      expect(target.pathname).toBe("/api/reactions.list");
+      expect(target.searchParams.get("user")).toBe("U0G9QF9C6");
+      expect(target.searchParams.get("limit")).toBe("50");
+      expect(target.searchParams.get("cursor")).toBe("dXNlcjpVMDYxTkZUVDI=");
+      expect(target.searchParams.get("full")).toBe("true");
+      return Response.json({
+        ok: true,
+        items: [
+          {
+            type: "message",
+            channel: "C024BE91L",
+            message: {
+              type: "message",
+              user: "U023BECGF",
+              text: "ship it",
+              ts: "1700000000.000100",
+              team: "T024BE7LD",
+              permalink: "https://example.slack.com/archives/C024BE91L/p1700000000000100",
+              reactions: [{ name: "thumbsup", users: ["U0G9QF9C6", "U023BECGF"], count: 2 }],
+            },
+          },
+          {
+            type: "file",
+            file: { id: "F0123456", name: "plan.pdf", reactions: [{ name: "eyes", users: ["U0G9QF9C6"], count: 1 }] },
+          },
+          {
+            type: "file_comment",
+            file: { id: "F0123457", reactions: [{ name: "eyes", users: ["U023BECGF"], count: 1 }] },
+            comment: { id: "Fc0123", reactions: [{ name: "tada", users: ["U0G9QF9C6"], count: 1 }] },
+          },
+        ],
+        response_metadata: { next_cursor: "dXNlcjpVMDYxTkZUVDM=" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(
+      { userId: "U0G9QF9C6", limit: 50, cursor: "dXNlcjpVMDYxTkZUVDI=", full: true },
+      context,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      ok: true,
+      output: {
+        items: [
+          {
+            type: "message",
+            channelId: "C024BE91L",
+            message: {
+              ts: "1700000000.000100",
+              type: "message",
+              userId: "U023BECGF",
+              teamId: "T024BE7LD",
+              text: "ship it",
+              reactions: [{ name: "thumbsup", count: 2, userIds: ["U0G9QF9C6", "U023BECGF"] }],
+            },
+            permalink: "https://example.slack.com/archives/C024BE91L/p1700000000000100",
+          },
+          { type: "file", fileId: "F0123456", reactions: [{ name: "eyes", count: 1, userIds: ["U0G9QF9C6"] }] },
+          {
+            type: "file_comment",
+            fileId: "F0123457",
+            commentId: "Fc0123",
+            reactions: [{ name: "tada", count: 1, userIds: ["U0G9QF9C6"] }],
+          },
+        ],
+        nextCursor: "dXNlcjpVMDYxTkZUVDM=",
+      },
+    });
+    const action = slackActions.find((candidate) => candidate.id === "slack.list_reactions")!;
+    const output = (result as { output: unknown }).output;
+    expect(new Validator(action.outputSchema).validate(output).valid).toBe(true);
+  });
+
+  it("asks for the connected user's first page by default and answers a null nextCursor on the last page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const target = new URL(input.toString());
+        expect(target.searchParams.get("limit")).toBe("100");
+        expect(target.searchParams.has("user")).toBe(false);
+        expect(target.searchParams.has("cursor")).toBe(false);
+        expect(target.searchParams.has("full")).toBe(false);
+        return Response.json({ ok: true, items: [] });
+      }),
+    );
+
+    await expect(execute({}, context)).resolves.toEqual({ ok: true, output: { items: [], nextCursor: null } });
+  });
+
+  it("rejects a page whose items are missing or malformed", async () => {
+    for (const payload of [
+      { ok: true },
+      { ok: true, items: "items" },
+      { ok: true, items: [null] },
+      { ok: true, items: [{ channel: "C024BE91L" }] },
+      { ok: true, items: [{ type: "message", channel: "C024BE91L", message: { text: "no ts" } }] },
+      { ok: true, items: [], response_metadata: { next_cursor: 7 } },
+    ]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Response.json(payload)),
+      );
+      const result = await execute({}, context);
+      expect(result).toMatchObject({ ok: false, error: { code: "provider_error", details: { status: 502 } } });
+    }
+  });
+
+  it.each([
+    { name: "an unsupported item type", item: { type: "other" } },
+    { name: "a padded item type", item: { type: " message ", channel: "C123", message: { ts: "1700000000.000100" } } },
+    { name: "a message without a message object", item: { type: "message", channel: "C123" } },
+    { name: "a message with a null message", item: { type: "message", channel: "C123", message: null } },
+    { name: "a message with a string message", item: { type: "message", channel: "C123", message: "broken" } },
+    { name: "a message with an array message", item: { type: "message", channel: "C123", message: [] } },
+    { name: "a message without a channel", item: { type: "message", message: { ts: "1700000000.000100" } } },
+    {
+      name: "a message with an empty channel",
+      item: { type: "message", channel: "", message: { ts: "1700000000.000100" } },
+    },
+    {
+      name: "a message with a numeric channel",
+      item: { type: "message", channel: 7, message: { ts: "1700000000.000100" } },
+    },
+    { name: "a file without a file object", item: { type: "file" } },
+    { name: "a file with a null file", item: { type: "file", file: null } },
+    { name: "a file with a string file", item: { type: "file", file: "broken" } },
+    { name: "a file with an array file", item: { type: "file", file: [] } },
+    { name: "a file without an ID", item: { type: "file", file: {} } },
+    { name: "a file with a padded ID", item: { type: "file", file: { id: " F123 " } } },
+    { name: "a file comment without a file", item: { type: "file_comment", comment: { id: "Fc123" } } },
+    {
+      name: "a file comment without a comment despite file reactions",
+      item: { type: "file_comment", file: { id: "F123", reactions: [{ name: "eyes", users: ["U123"], count: 1 }] } },
+    },
+    { name: "a file comment with a null comment", item: { type: "file_comment", file: { id: "F123" }, comment: null } },
+    {
+      name: "a file comment with a string comment",
+      item: { type: "file_comment", file: { id: "F123" }, comment: "broken" },
+    },
+    { name: "a file comment with an array comment", item: { type: "file_comment", file: { id: "F123" }, comment: [] } },
+    { name: "a file comment without a file ID", item: { type: "file_comment", file: {}, comment: { id: "Fc123" } } },
+    { name: "a file comment without a comment ID", item: { type: "file_comment", file: { id: "F123" }, comment: {} } },
+  ])("rejects $name", async ({ item }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ ok: true, items: [item] })),
+    );
+
+    await expect(execute({}, context)).resolves.toMatchObject({
+      ok: false,
+      error: { code: "provider_error", details: { status: 502 } },
+    });
+  });
+
+  it.each([
+    { name: "an item without a type", item: {} },
+    { name: "an item with an unsupported type", item: { type: "other" } },
+    { name: "a message without a channel ID", item: { type: "message", message: { ts: "1700000000.000100" } } },
+    { name: "a message without a message", item: { type: "message", channelId: "C123" } },
+    { name: "a message without a timestamp", item: { type: "message", channelId: "C123", message: {} } },
+    { name: "a file without a file ID", item: { type: "file" } },
+    { name: "a file comment without a file ID", item: { type: "file_comment", commentId: "Fc123" } },
+    { name: "a file comment without a comment ID", item: { type: "file_comment", fileId: "F123" } },
+  ])("declares an output schema that rejects $name", ({ item }) => {
+    const action = slackActions.find((candidate) => candidate.id === "slack.list_reactions")!;
+    expect(new Validator(action.outputSchema).validate({ items: [item], nextCursor: null }).valid).toBe(false);
+  });
+
+  it("validates its input and is inherited by slackbot", () => {
+    const action = slackActions.find((candidate) => candidate.id === "slack.list_reactions")!;
+    expect(action.operationType).toBe("read");
+    expect(action.requiredScopes).toEqual(["reactions:read"]);
+    for (const input of [{ limit: 0 }, { limit: 201 }, { userId: "" }, { cursor: 7 }]) {
+      expect(validateActionInput(action, input).valid).toBe(false);
+    }
+    expect(validateActionInput(action, { userId: "U0G9QF9C6", limit: 200, full: false }).valid).toBe(true);
+    expect(slackbotActions.some((candidate) => candidate.id === "slackbot.list_reactions")).toBe(true);
+    expect(slackbotExecutors["slackbot.list_reactions"]).toBeTypeOf("function");
+  });
+});

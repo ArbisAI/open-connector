@@ -134,6 +134,38 @@ const slackMessageSchema = s.looseObject(
   { description: "A Slack message record." },
 );
 
+// One `reactions.list` item. A message item carries its conversation and the
+// message row above (reactions included); a file or file comment item carries
+// the file ID and the reactions on it.
+const reactionListItemSchema: JsonSchema = {
+  ...s.object(
+    {
+      type: s.stringEnum(["message", "file", "file_comment"], { description: "The kind of item reacted to." }),
+      channelId: channelIdSchema,
+      message: {
+        ...slackMessageSchema,
+        required: ["ts"],
+      },
+      permalink: s.string({ description: "A Slack permalink for the message, when Slack returns one." }),
+      fileId: fileIdSchema,
+      commentId: s.nonEmptyString("The file comment ID, on a file comment item."),
+      reactions: s.array(slackReactionSchema, {
+        description: "Reaction summaries on a file or file comment item. A message item carries them on message.",
+      }),
+    },
+    {
+      required: ["type"],
+      additionalProperties: true,
+      description: "An item the user reacted to, with the reactions on it.",
+    },
+  ),
+  oneOf: [
+    { properties: { type: s.literal("message") }, required: ["channelId", "message"] },
+    { properties: { type: s.literal("file") }, required: ["fileId"] },
+    { properties: { type: s.literal("file_comment") }, required: ["fileId", "commentId"] },
+  ],
+};
+
 const searchMessageMatchSchema = s.looseObject(
   {
     matchId: s.string({ description: "Slack's search result item identifier." }),
@@ -710,6 +742,29 @@ export const slackActions: ActionDefinition[] = [
     outputSchema: s.object(
       { item: reactionItemSchema },
       { required: ["item"], description: "The output payload for this action." },
+    ),
+  }),
+  action({
+    name: "list_reactions",
+    operationType: "read",
+    description:
+      "List the messages and files a Slack user reacted to, with the reactions on each. Defaults to the connected user.",
+    requiredScopes: ["reactions:read"],
+    inputSchema: s.object(
+      {
+        userId: s.nonEmptyString("The Slack user whose reactions to list. Defaults to the connected user."),
+        limit: s.integer({ minimum: 1, maximum: 200, description: "The maximum number of items to return." }),
+        cursor: s.string({ description: "The Slack pagination cursor." }),
+        full: s.boolean({ description: "Whether Slack should return the complete reaction user lists." }),
+      },
+      { description: "Input parameters for listing Slack reactions." },
+    ),
+    outputSchema: s.object(
+      {
+        items: s.array(reactionListItemSchema, { description: "The items the user reacted to." }),
+        nextCursor: s.nullable(s.string({ description: "The cursor for the next page." })),
+      },
+      { required: ["items", "nextCursor"], description: "The output payload for this action." },
     ),
   }),
   action({
