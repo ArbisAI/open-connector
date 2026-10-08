@@ -63,6 +63,19 @@ afterEach(() => {
   for (const database of requestDatabases.splice(0)) database.close();
 });
 
+it.each([
+  { method: "GET", path: "/v1/users/connectors" },
+  { method: "POST", path: "/v1/users/connectors" },
+  { method: "DELETE", path: "/v1/users/connectors/fixture-mapping" },
+])("does not expose the retired user mapping API: $method $path", async ({ method, path }) => {
+  const app = createTestServer([apiKeyProvider], { auth: { runtimeToken: "fixture-runtime" } }).createApp();
+  const response = await app.request(path, {
+    method,
+    headers: { authorization: "Bearer fixture-runtime", "x-arbis-user-id": "fixture-user" },
+  });
+  expect(response.status).toBe(404);
+});
+
 const oauthProvider: ProviderDefinition = {
   service: "oauth_example",
   displayName: "OAuth Example",
@@ -2634,6 +2647,25 @@ describe("ConnectServer", () => {
     expect(markdown).toContain("Example Account");
     expect(markdown).toContain("`example-account`");
     expect(markdown).toContain("`messages:read`");
+  });
+
+  it("selects the exact connection ID for an agent guide and rejects an unknown ID", async () => {
+    const app = createTestServer([{ ...apiKeyProvider, actions: [echoAction] }]).createApp();
+    const created = await app.request("/api/connections/example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authType: "api_key", connectionName: "personal", values: { apiKey: "secret-sentinel" } }),
+    });
+    const connection = await created.json();
+    const guide = await app.request("/api/actions/example.echo/agent.md", {
+      headers: { "x-oo-connector-app-id": connection.id },
+    });
+    expect(guide.status).toBe(200);
+    expect(await guide.text()).not.toContain("secret-sentinel");
+    const missing = await app.request("/api/actions/example.echo/agent.md", {
+      headers: { "x-oo-connector-app-id": "missing" },
+    });
+    expect(missing.status).toBe(404);
   });
 
   it("renders agent.md request examples against the configured public origin", async () => {

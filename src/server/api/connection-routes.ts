@@ -53,11 +53,24 @@ export function createConnectionRoutes({ connections, oauthFlow, saasOAuth }: Co
     const apps = (await connections.listManagedConnections()).map(serializeManagedConnection);
     return writeRuntimeSuccess(context, status ? apps.filter((app) => app.status === status) : apps);
   });
+  app.get("/connections/by-alias/:service/:alias", async (context) => {
+    return writeRuntimeSuccess(
+      context,
+      serializeManagedConnection(
+        await connections.getManagedConnectionByAlias(context.req.param("service"), context.req.param("alias")),
+      ),
+    );
+  });
   app.get("/connections/by-id/:appId", async (context) => {
     return writeRuntimeSuccess(
       context,
       serializeManagedConnection(await connections.getManagedConnection(context.req.param("appId"))),
     );
+  });
+  app.delete("/connections/by-id/:appId", async (context) => {
+    const connection = await connections.getStoredConnection(context.req.param("appId"));
+    await connections.disconnect(connection.service, connection.connectionName);
+    return writeRuntimeSuccess(context, null);
   });
   app.get("/connection-requests/:connectionRequestId", async (context) => {
     const id = context.req.param("connectionRequestId");
@@ -111,8 +124,14 @@ export function createConnectionRoutes({ connections, oauthFlow, saasOAuth }: Co
         let summary;
         if (authType === "api-key") {
           const input = parseBody(apiKeyConnectionInput, body);
+          if (target && input.connectionName && input.connectionName !== target.connectionName)
+            throw new ConnectionError(
+              "connection_not_found",
+              "Connection alias does not match the selected connection.",
+            );
           summary = await connections.connectWithApiKey(service, {
             ...options,
+            connectionName: target?.connectionName ?? input.connectionName ?? options.connectionName,
             values: { ...input.extra, apiKey: input.apiKey },
             comment: input.comment,
           });
