@@ -1,3 +1,4 @@
+import iconv from "iconv-lite";
 import { Buffer } from "node:buffer";
 import { providerInputError, providerResponseError, ProviderRequestError } from "../provider-runtime.ts";
 import { gmailMaxMimeBytes } from "./limits.ts";
@@ -62,6 +63,56 @@ interface ParsedMimeHeader {
   duplicateParameters: boolean;
 }
 
+interface MimeReplyHeaders {
+  encodedSubject: string;
+  inReplyTo: string;
+  references: string;
+}
+
+/** Read a draft's subject and reply identity without changing or traversing its MIME body. */
+export function readMimeReplyHeaders(original: string): MimeReplyHeaders {
+  const root = parseEntity(decodeRaw(original));
+  return {
+    encodedSubject: Buffer.from(headerValue(root, "Subject"), "latin1").toString("utf8"),
+    inReplyTo: headerValue(root, "In-Reply-To"),
+    references: headerValue(root, "References"),
+  };
+}
+
+/** Decode RFC 2047 subject words from Gmail payload or raw MIME headers. */
+export function decodeMimeSubject(value: string): string {
+  const unfolded = value.replace(/\r?\n[ \t]+/g, " ");
+  const joined = unfolded.replace(/(=\?[^?\s]+\?[bq]\?[^?]*\?=)[ \t]+(?==\?[^?\s]+\?[bq]\?[^?]*\?=)/gi, "$1");
+  return joined.replace(
+    /=\?([^?\s]+)\?([bq])\?([^?]*)\?=/gi,
+    (_word, charset: string, encoding: string, text: string) => {
+      const bytes =
+        encoding.toLowerCase() === "b"
+          ? Buffer.from(text, "base64")
+          : Buffer.from(
+              text
+                .replace(/_/g, " ")
+                .replace(/=([0-9a-f]{2})/gi, (_escape, hex: string) => String.fromCharCode(Number.parseInt(hex, 16))),
+              "latin1",
+            );
+      try {
+        // RFC 2231 adds an optional language tag to the charset token.
+        const charsetName = charset.split("*", 1)[0]!;
+        let decoder: TextDecoder;
+        try {
+          decoder = new TextDecoder(charsetName, { fatal: true });
+        } catch {
+          // Fall back for unsupported charsets, never for invalid bytes in a supported charset.
+          return iconv.decode(bytes, charsetName);
+        }
+        return decoder.decode(bytes);
+      } catch {
+        throw providerResponseError("Gmail subject has an invalid or unsupported RFC 2047 encoded word");
+      }
+    },
+  );
+}
+
 /** Encode a Gmail message with caller-supplied attachments and CID resources. */
 export function encodeMimeMessage(input: MimeMessageInput): string {
   const headers = messageHeaders(input);
@@ -116,9 +167,11 @@ export function updateMimeMessage(original: string, patch: MimeMessagePatch): st
 
 /** Reject header delimiters before encoding can conceal them in an encoded word. */
 function assertMimeHeaderValue(value: string, field: string): void {
+  const allowsTab = field === "subject" || field === "In-Reply-To" || field === "References";
   for (const char of value) {
     const code = char.charCodeAt(0);
-    if (code <= 0x1f || code === 0x7f) throw providerInputError(`${field} must not contain control characters`);
+    if ((code <= 0x1f && !(code === 0x09 && allowsTab)) || code === 0x7f)
+      throw providerInputError(`${field} must not contain control characters`);
   }
 }
 
@@ -453,7 +506,7 @@ function encodeAddress(address: string): string {
 
 function encodeWords(value: string, field: string): string {
   assertMimeHeaderValue(value, field);
-  if (!/[^\x20-\x7f]/.test(value)) return value;
+  if (!/[^\x20-\x7f]/.test(value) && !/=\?[^?\s]+\?[bq]\?[^?]*\?=/i.test(value)) return value;
   const chunks: string[] = [];
   let current = "";
   for (const char of value) {
