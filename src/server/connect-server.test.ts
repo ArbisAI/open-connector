@@ -63,6 +63,19 @@ afterEach(() => {
   for (const database of requestDatabases.splice(0)) database.close();
 });
 
+it.each([
+  { method: "GET", path: "/v1/users/connectors" },
+  { method: "POST", path: "/v1/users/connectors" },
+  { method: "DELETE", path: "/v1/users/connectors/fixture-mapping" },
+])("does not expose the retired user mapping API: $method $path", async ({ method, path }) => {
+  const app = createTestServer([apiKeyProvider], { auth: { runtimeToken: "fixture-runtime" } }).createApp();
+  const response = await app.request(path, {
+    method,
+    headers: { authorization: "Bearer fixture-runtime", "x-arbis-user-id": "fixture-user" },
+  });
+  expect(response.status).toBe(404);
+});
+
 const oauthProvider: ProviderDefinition = {
   service: "oauth_example",
   displayName: "OAuth Example",
@@ -3969,7 +3982,6 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
     uploadTransitFile: options.uploadTransitFile,
     runtimeTokens,
     runtimePolicyStore: options.runtimePolicyStore ?? new MemoryRuntimePolicyStore(),
-    userConnectionStore: requestDatabase.userConnectionStore,
     registerStaticRoutes: staticRoot ? (app) => registerStaticRoutes(app, { root: staticRoot }) : undefined,
     auth: {
       ...options.auth,

@@ -8,6 +8,7 @@ import { Client, Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AesGcmSecretCodec } from "../../secrets/secret-codec.ts";
 import { connectionRequestStoreTests } from "../connection-request-store.cases.ts";
+import { retiredUserMappingMigrationSource } from "../migration-retirement.fixtures.ts";
 import { defaultMigrationSource } from "../migration-source.ts";
 import { createNodeRuntimeDatabase, migratePostgresRuntimeDatabase } from "../node-runtime-database.ts";
 import { RuntimeTokenService } from "../runtime-token-service.ts";
@@ -27,6 +28,96 @@ interface PGliteTestServer {
   server: PGLiteSocketServer;
   url: string;
 }
+
+describe("PostgreSQL retired user mapping migrations", () => {
+  let testServer: PGliteTestServer;
+  let pool: Pool;
+
+  beforeEach(async () => {
+    testServer = await startPGliteTestServer();
+    pool = new Pool({ connectionString: testServer.url, max: 1 });
+  });
+
+  afterEach(async () => {
+    await pool.end();
+    await testServer.server.stop();
+    await testServer.database.close();
+  });
+
+  it("starts with standard migrations without requiring or creating retired user mappings", async () => {
+    await migratePostgresDatabase({ pool });
+    await expect(assertPostgresSchemaReady(pool, retiredUserMappingMigrationSource)).rejects.toThrow(
+      "Missing migrations: 0018_user_connections.sql",
+    );
+    await expect(assertPostgresSchemaReady(pool)).resolves.toBeUndefined();
+    const database = await PostgresRuntimeDatabase.open(testServer.url, {
+      secretCodec: new AesGcmSecretCodec("retirement-test"),
+    });
+    try {
+      await database.connectionStore.set("github", "owned", githubCredential("fixture-only"));
+      await expect(database.connectionStore.get("github", "owned")).resolves.toMatchObject({
+        credential: { apiKey: "fixture-only" },
+      });
+      expect(
+        (
+          await pool.query(
+            "select table_name from information_schema.tables where table_schema = 'public' and table_name in ('users', 'user_connections')",
+          )
+        ).rows,
+      ).toEqual([]);
+      expect(
+        (await pool.query("select name from runtime_migrations where name = '0018_user_connections.sql'")).rows,
+      ).toEqual([]);
+      expect((await pool.query("select value from connections")).rows).toEqual([
+        { value: expect.stringMatching(/^enc:v1:/) },
+      ]);
+    } finally {
+      await database.close();
+    }
+  });
+
+  it("reopens databases with retired user mappings without changing data or migration history", async () => {
+    await migratePostgresDatabase({ pool, migrations: retiredUserMappingMigrationSource });
+    const secretCodec = new AesGcmSecretCodec("retirement-test");
+    const previous = await PostgresRuntimeDatabase.open(testServer.url, {
+      secretCodec,
+      migrations: retiredUserMappingMigrationSource,
+    });
+    const connection = await previous.connectionStore.set("github", "owned", githubCredential("fixture-only"));
+    await previous.close();
+    await pool.query("insert into users values ('fixture-user', '2026-10-07')");
+    await pool.query(
+      "insert into user_connections values ('fixture-mapping', 'fixture-user', 'github', '2026-10-07', '2026-10-07')",
+    );
+    const encryptedValue = (await pool.query("select value from connections where id = $1", [connection.id])).rows[0]
+      .value;
+    const reopened = await PostgresRuntimeDatabase.open(testServer.url, { secretCodec });
+    try {
+      await expect(reopened.connectionStore.get("github", "owned")).resolves.toEqual(connection);
+      expect((await pool.query("select value from connections where id = $1", [connection.id])).rows[0].value).toBe(
+        encryptedValue,
+      );
+      expect((await pool.query("select * from users")).rows).toEqual([
+        { id: "fixture-user", created_at: "2026-10-07" },
+      ]);
+      expect((await pool.query("select * from user_connections")).rows).toEqual([
+        {
+          id: "fixture-mapping",
+          user_id: "fixture-user",
+          connection_service: "github",
+          created_at: "2026-10-07",
+          updated_at: "2026-10-07",
+        },
+      ]);
+      expect(
+        (await pool.query("select name from runtime_migrations where name = '0018_user_connections.sql'")).rows,
+      ).toEqual([{ name: "0018_user_connections.sql" }]);
+      await expect(assertPostgresSchemaReady(pool)).resolves.toBeUndefined();
+    } finally {
+      await reopened.close();
+    }
+  });
+});
 
 describe("PGlite PostgreSQL protocol fixture", () => {
   let testServer: PGliteTestServer;
@@ -104,7 +195,6 @@ describe("PostgreSQL migrations with PGlite", () => {
           { name: "0015_saas_cleanup_runtime.sql" },
           { name: "0016_trigger_policy.sql" },
           { name: "0017_trigger_subscriptions.sql" },
-          { name: "0018_user_connections.sql" },
         ],
       });
 
@@ -168,7 +258,6 @@ describe("PostgreSQL migrations with a custom migration source", () => {
           { name: "0015_saas_cleanup_runtime.sql" },
           { name: "0016_trigger_policy.sql" },
           { name: "0017_trigger_subscriptions.sql" },
-          { name: "0018_user_connections.sql" },
           { name: "9998_custom.sql" },
         ],
       });
