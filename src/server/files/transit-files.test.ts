@@ -207,6 +207,22 @@ describe("TransitFileService", () => {
     await expect(readdir(rootDir)).resolves.toEqual([]);
   });
 
+  it("runs one sweep at a time, sharing a single follow-up among callers that arrive mid-sweep", async () => {
+    const { rootDir, service } = await createService();
+    const expired = await service.create(new File(["old"], "old.txt", { type: "text/plain" }));
+    // Settle the write path's own background sweep; the next one is a minute away.
+    await service.cleanupExpired();
+    await expire(rootDir, expired.fileId);
+    const first = service.cleanupExpired();
+    const second = service.cleanupExpired();
+    const third = service.cleanupExpired();
+
+    expect(second).toBe(third);
+    expect(second).not.toBe(first);
+    await Promise.all([first, second, third]);
+    await expect(readdir(rootDir)).resolves.toEqual([]);
+  });
+
   it("sweeps expired files and their side-cars while keeping live uploads", async () => {
     const { rootDir, service } = await createService();
     const expired = await service.create(new File(["old"], "old.txt", { type: "text/plain" }));
