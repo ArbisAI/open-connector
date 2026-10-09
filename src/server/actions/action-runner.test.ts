@@ -49,6 +49,88 @@ afterEach(() => {
 });
 
 describe("ActionRunner", () => {
+  it("resolves preview folders through the reviewed connection and the caller's read policy", async () => {
+    const create = {
+      ...echoAction,
+      service: "googledrive",
+      id: "googledrive.files.create",
+      operationType: "write" as const,
+    };
+    const read = { ...echoAction, service: "googledrive", id: "googledrive.files.get" };
+    const runner = createRunner({
+      runs: new MemoryRunLogStore(),
+      logger: createTestLogger().logger,
+      provider: { ...exampleProvider, service: "googledrive", actions: [create, read] },
+    });
+    const prepared = {
+      version: 1,
+      actionId: create.id,
+      connectionId: "reviewed-account",
+      inputHash: "input-hash",
+      reads: [],
+      request: {
+        method: "POST",
+        url: "https://www.googleapis.com/drive/v3/files",
+        headers: {},
+        bodyBase64: Buffer.from(JSON.stringify({ name: "Report", parents: ["folder-1"] })).toString("base64"),
+      },
+    };
+    const connection = {
+      id: "reviewed-account",
+      service: "googledrive",
+      connectionName: "work",
+      authType: "no_auth" as const,
+      configured: true,
+      virtual: false,
+      default: false,
+      profile: { accountId: "work@example.com", displayName: "Work", grantedScopes: [] },
+    };
+    const run = vi
+      .spyOn(runner, "run")
+      .mockResolvedValueOnce({
+        executionId: "prepared-1",
+        auditPersisted: true,
+        connection,
+        result: { ok: true, output: prepared },
+      })
+      .mockResolvedValueOnce({
+        executionId: "read-1",
+        auditPersisted: true,
+        connection,
+        result: {
+          ok: true,
+          output: { id: "folder-1", name: "Reports", mimeType: "application/vnd.google-apps.folder" },
+        },
+      });
+    const signal = new AbortController().signal;
+    const policy = new ActionPolicyService().createSnapshot();
+    const result = await runner.prepare({
+      actionId: create.id,
+      input: { name: "Report", parents: ["folder-1"] },
+      caller: "http",
+      policy,
+      signal,
+      runtimeTokenId: "caller-token",
+    });
+    expect(run).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        actionId: read.id,
+        connectionId: "reviewed-account",
+        policy,
+        signal,
+        runtimeTokenId: "caller-token",
+        input: { fileId: "folder-1", fields: "id,name,mimeType" },
+        prepare: false,
+        prepared: undefined,
+      }),
+    );
+    expect(result?.result.output).toMatchObject({
+      prepared,
+      preview: { resources: [{ key: "parents", id: "folder-1", name: "Reports" }] },
+    });
+  });
+
   it("uses one execution id across logs, storage, and the result", async () => {
     const runs = new MemoryRunLogStore();
     const { entries, logger } = createTestLogger();

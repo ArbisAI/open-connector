@@ -3,7 +3,7 @@ import type { PreparedAction } from "./approval.ts";
 
 import { Buffer } from "node:buffer";
 import { describe, expect, it, vi } from "vitest";
-import { buildActionPreview } from "../server/actions/action-preview.ts";
+import { buildActionPreview, resolvePreviewFolders } from "../server/actions/action-preview.ts";
 import { approvedHttpFetch, prepareHttpAction, runApprovedHttpAction } from "./approval.ts";
 import { gmailActionHandlers } from "./gmail/executors.ts";
 import { encodeMimeMessage } from "./gmail/message.ts";
@@ -313,5 +313,91 @@ describe("saved provider approvals", () => {
     await fetcher(saved.request!.url, { method: "PATCH" });
     await expect(fetcher(saved.request!.url, { method: "PATCH" })).rejects.toThrow("changed after review");
     expect(transport).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("readable approval metadata", () => {
+  it("deduplicates folder fields using the captured destination while preserving the exact saved input", async () => {
+    const input = { name: "NEXO-H04 Source", parents: ["old-folder"] };
+    const saved = prepare("googledrive.files.create", {
+      reads: [],
+      request: {
+        method: "POST",
+        url: "https://www.googleapis.com/drive/v3/files",
+        headers: {},
+        bodyBase64: Buffer.from(
+          JSON.stringify({
+            name: "NEXO-H04 Source",
+            mimeType: "application/vnd.google-apps.document",
+            parents: ["reviewed-folder"],
+          }),
+        ).toString("base64"),
+      },
+    });
+    const frozen = JSON.stringify(saved);
+    const preview = await buildActionPreview(action("googledrive.files.create"), undefined, input, saved);
+    expect(preview.fields.filter((field) => field.key === "parents")).toEqual([
+      expect.objectContaining({ value: ["reviewed-folder"] }),
+    ]);
+    const read = vi.fn(async (id: string) => ({
+      id,
+      name: "Nexo Tests",
+      mimeType: "application/vnd.google-apps.folder",
+    }));
+    await resolvePreviewFolders(preview, read);
+    expect(read).toHaveBeenCalledExactlyOnceWith("reviewed-folder");
+    expect(preview.resources).toEqual([
+      {
+        key: "parents",
+        id: "reviewed-folder",
+        name: "Nexo Tests",
+        url: "https://drive.google.com/drive/folders/reviewed-folder",
+      },
+    ]);
+    expect(preview.savedInput).toEqual(input);
+    expect(JSON.stringify(saved)).toBe(frozen);
+  });
+
+  it("leaves destination identifiers intact when optional folder reads are denied or mismatched", async () => {
+    const preview = {
+      proposalId: "preview-1",
+      version: 1 as const,
+      service: "googledrive",
+      actionId: "googledrive.files.create",
+      title: "files.create",
+      account: "me@example.com",
+      kind: "document" as const,
+      effect: "create" as const,
+      fields: [{ key: "parents", value: ["denied", "mismatched"] }],
+      savedInput: {},
+    };
+    const read = vi.fn(async (id: string) => {
+      if (id === "denied") throw new Error("permission denied");
+      return { id: "different-folder", name: "Wrong name", mimeType: "application/vnd.google-apps.folder" };
+    });
+    await resolvePreviewFolders(preview, read);
+    expect(preview.fields[0]?.value).toEqual(["denied", "mismatched"]);
+    expect(preview).toHaveProperty("resources", []);
+  });
+
+  it("bounds folder lookups and does not resolve resources from other providers", async () => {
+    const preview = {
+      proposalId: "preview-1",
+      version: 1 as const,
+      service: "googledrive",
+      actionId: "googledrive.files.create",
+      title: "files.create",
+      account: "me@example.com",
+      kind: "document" as const,
+      effect: "create" as const,
+      fields: [{ key: "parents", value: ["1", "2", "3", "4", "https://untrusted.test"] }],
+      savedInput: {},
+    };
+    const read = vi.fn(async () => undefined);
+    await resolvePreviewFolders(preview, read);
+    expect(read).toHaveBeenCalledTimes(3);
+    read.mockClear();
+    await resolvePreviewFolders({ ...preview, service: "notion" }, read);
+    expect(read).not.toHaveBeenCalled();
   });
 });

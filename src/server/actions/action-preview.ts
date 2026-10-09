@@ -22,6 +22,7 @@ export interface ActionPreview {
   kind: "email" | "calendar" | "document" | "deletion" | "generic";
   effect: "send" | "create" | "update" | "append" | "replace" | "trash" | "delete" | "generic";
   fields: PreviewField[];
+  resources?: Array<{ key: string; id: string; name?: string; url?: string }>;
   body?: string;
   html?: string;
   attachments?: Array<{ name: string; mimeType: string; size: number; contentBase64: string }>;
@@ -81,6 +82,7 @@ export async function buildActionPreview(
   }
   const currentFields = optionalRecord(current) ?? {};
   const fields: PreviewField[] = [];
+  const fieldIndexes = new Map<string, number>();
   const preview: ActionPreview = {
     proposalId: crypto.randomUUID(),
     version: 1,
@@ -99,12 +101,19 @@ export async function buildActionPreview(
     savedInput: input,
   };
   const add = (key: string, value: unknown, before?: unknown) => {
-    if (value !== undefined)
-      fields.push({
+    if (value !== undefined) {
+      const field = {
         key,
         value,
         before: before !== undefined && JSON.stringify(before) !== JSON.stringify(value) ? before : undefined,
-      });
+      };
+      const index = fieldIndexes.get(key);
+      if (index !== undefined) fields[index] = field;
+      else {
+        fieldIndexes.set(key, fields.length);
+        fields.push(field);
+      }
+    }
   };
   const deleted = request?.method === "DELETE";
   const trash =
@@ -206,4 +215,39 @@ export async function buildActionPreview(
       body: Object.keys(body).length > 0 ? body : bodyText,
     });
   return preview;
+}
+
+/** Resolve optional folder labels through the caller's existing connection and read policy. */
+export async function resolvePreviewFolders(
+  preview: ActionPreview,
+  read: (fileId: string) => Promise<unknown>,
+): Promise<void> {
+  if (preview.service !== "googledrive") return;
+  const folders = new Map<string, string[]>();
+  for (const field of preview.fields) {
+    if (!["parents", "addParents", "removeParents"].includes(field.key)) continue;
+    const ids = Array.isArray(field.value) ? field.value : String(field.value ?? "").split(",");
+    for (const value of ids) {
+      const id = optionalString(value);
+      if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) continue;
+      folders.set(id, [...(folders.get(id) ?? []), field.key]);
+    }
+  }
+  const resolved = await Promise.all(
+    [...folders].slice(0, 3).map(async ([id, keys]) => {
+      try {
+        const record = optionalRecord(await read(id));
+        if (record?.id !== id || record?.mimeType !== "application/vnd.google-apps.folder") return [];
+        return keys.map((key) => ({
+          key,
+          id,
+          name: optionalString(record.name),
+          url: `https://drive.google.com/drive/folders/${encodeURIComponent(id)}`,
+        }));
+      } catch {
+        return [];
+      }
+    }),
+  );
+  preview.resources = resolved.flat();
 }
