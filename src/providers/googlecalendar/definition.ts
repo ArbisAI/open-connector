@@ -22,6 +22,14 @@ export const provider: ProviderDefinition = {
       tokenUrl: "https://oauth2.googleapis.com/token",
       revocationUrl: "https://oauth2.googleapis.com/revoke",
       scopes: googlecalendarOAuthScopes,
+      authorizationOptions: googlecalendarOAuthScopes.map((id) => ({
+        id,
+        label: id.split("/").pop() ?? id,
+        description: "Optional Google permission. Reading does not require write access.",
+        required: false,
+        defaultSelected: id.endsWith(".readonly") || ["openid", "email", "profile"].includes(id),
+        risk: "sensitive",
+      })),
       tokenEndpointAuthMethod: "client_secret_post",
       authorizationParams: {
         access_type: "offline",
