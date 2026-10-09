@@ -1,3 +1,4 @@
+import type { ActionApproval } from "../providers/approval.ts";
 import type { TriggerKeySnapshot } from "../triggers/common/types.ts";
 import type { TriggerPermission } from "../triggers/metadata.ts";
 /**
@@ -373,6 +374,7 @@ export type TransitFileWriter = TransitFileStore;
  * depending on a concrete storage implementation.
  */
 export interface ExecutionContext {
+  approval?: ActionApproval;
   /** Resolve the credential currently configured for a provider service id. */
   getCredential(service: string): Promise<ResolvedCredential | undefined>;
   /** Optional local temporary file storage for actions that produce downloadable files. */

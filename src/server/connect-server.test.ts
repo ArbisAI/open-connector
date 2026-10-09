@@ -634,6 +634,39 @@ describe("ConnectServer", () => {
     });
   });
 
+  it("prepares without executing and binds the saved plan to the original action input", async () => {
+    const execute = vi.fn(async (input) => ({ ok: true as const, output: input }));
+    const app = createTestServer([{ ...apiKeyProvider, actions: [echoAction] }], {
+      providerLoader: new ActionProviderLoader(execute),
+    }).createApp();
+    await app.request("/api/connections/example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authType: "api_key", values: { apiKey: "example-key" } }),
+    });
+    const request = (input: unknown, prepared?: unknown) => ({
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input, prepared }),
+    });
+    const response = await app.request("/v1/actions/example.echo/prepare", request({ message: "Reviewed" }));
+    expect(response.status).toBe(200);
+    const { data } = await response.json();
+    expect(data.preview.savedInput).toEqual({ message: "Reviewed" });
+    expect(execute).not.toHaveBeenCalled();
+    const changed = await app.request("/v1/actions/example.echo", request({ message: "Changed" }, data.prepared));
+    expect((await changed.json()).errorCode).toBe("approval_expired");
+    expect(execute).not.toHaveBeenCalled();
+    const approved = {
+      ...request({ message: "Reviewed" }, data.prepared),
+      headers: { "content-type": "application/json", "idempotency-key": "saved-approval-1" },
+    };
+    const executed = await app.request("/v1/actions/example.echo", approved);
+    expect(executed.status).toBe(200);
+    expect((await app.request("/v1/actions/example.echo", approved)).status).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects malformed JSON request bodies", async () => {
     const app = createTestServer([
       {

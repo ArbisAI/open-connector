@@ -30,6 +30,13 @@ import {
   runWithProviderHttpDispatch,
 } from "../core/provider-http-dispatch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
+import {
+  ApprovalPreparationError,
+  runApprovedHttpAction,
+  prepareHttpAction,
+  preparationFailure,
+  supportsPreparedAction,
+} from "./approval.ts";
 
 /**
  * Fetch-compatible function accepted by provider runtime helpers and tests.
@@ -1384,14 +1391,26 @@ export function defineProviderExecutors<TContext>(input: ProviderExecutorDefinit
   for (const [name, handler] of Object.entries(input.handlers)) {
     executors[`${input.service}.${name}`] = async (actionInput, executionContext): Promise<ExecutionResult> => {
       try {
-        return {
-          ok: true,
-          output: await handler(
-            actionInput as Record<string, unknown>,
-            await input.createContext(executionContext, egressFetch),
-          ),
-        };
+        const context = await input.createContext(executionContext, egressFetch);
+        const approval = executionContext.approval;
+        if (approval && supportsPreparedAction(`${input.service}.${name}`)) {
+          if (
+            !context ||
+            typeof context !== "object" ||
+            !("fetcher" in context) ||
+            typeof context.fetcher !== "function"
+          ) {
+            throw new ApprovalPreparationError("This action cannot prepare a complete approval.");
+          }
+          const fetcher = context.fetcher as ProviderFetch;
+          const run = (reviewFetch: ProviderFetch) =>
+            handler(actionInput as Record<string, unknown>, { ...context, fetcher: reviewFetch });
+          if (approval.mode === "prepare") return { ok: true, output: await prepareHttpAction(run, fetcher) };
+          return { ok: true, output: await runApprovedHttpAction(run, fetcher, approval.prepared) };
+        }
+        return { ok: true, output: await handler(actionInput as Record<string, unknown>, context) };
       } catch (error) {
+        if (error instanceof ApprovalPreparationError) return preparationFailure(error);
         return input.mapError?.(error) ?? toProviderExecutionError(error, fallbackMessage);
       }
     };

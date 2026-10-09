@@ -6,6 +6,7 @@ import type { ProviderHttpDispatchOptions } from "../core/provider-http-dispatch
 import type { RuntimeLogger, TransitFileUpload } from "../core/types.ts";
 import type { MarketplaceConfigInput, MarketplaceService } from "../marketplace/marketplace-service.ts";
 import type { OAuthClientConfigInput } from "../oauth/oauth-client-config-service.ts";
+import type { PreparedAction } from "../providers/approval.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { SaasExecutionService } from "../saas/saas-execution-service.ts";
 import type { SaasOAuthService } from "../saas/saas-oauth-service.ts";
@@ -41,6 +42,7 @@ import { withProviderHttpDispatch } from "../core/provider-http-dispatch.ts";
 import { MarketplaceError } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigError, OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthCallbackError, OAuthFlowError, OAuthFlowService } from "../oauth/oauth-flow-service.ts";
+import { isPreparedAction } from "../providers/approval.ts";
 import { ProviderDispatchRequestError, toProviderExecutionError } from "../providers/provider-runtime.ts";
 import { SaasError } from "../saas/saas-client.ts";
 import {
@@ -256,6 +258,9 @@ export class ConnectServer {
     app.get("/v1/actions", (context) => this.listRuntimeActions(context));
     app.get("/v1/actions/search", (context) => this.searchRuntimeActions(context));
     app.get("/v1/actions/:actionId", (context) => this.getRuntimeAction(context, context.req.param("actionId")));
+    app.post("/v1/actions/:actionId/prepare", (context) =>
+      this.prepareRuntimeAction(context, context.req.param("actionId")),
+    );
     app.post("/v1/actions/:actionId", (context) => this.createRuntimeActionRun(context, context.req.param("actionId")));
     app.route("/v1", createConnectionRoutes(this.options));
     // Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
@@ -809,6 +814,26 @@ export class ConnectServer {
     return writeRuntimeSuccess(context, result);
   }
 
+  private async prepareRuntimeAction(context: Context, actionId: string): Promise<Response> {
+    if (!this.options.catalog.actionsById.has(actionId))
+      return writeRuntimeFailure(context, unknownActionFailure(actionId));
+    const body = await readJsonBody(context);
+    const policy = await this.getPolicySnapshot(context);
+    const run = await this.options.actions.prepare({
+      actionId,
+      input: body.input ?? {},
+      caller: "http",
+      policy,
+      connectionName: readConnectionName(context, body),
+      connectionId: optionalString(context.req.header("x-oo-connector-app-id")),
+      runtimeTokenId: readRuntimeGrant(context)?.tokenId,
+      signal: context.req.raw.signal,
+    });
+    if (!run) return writeRuntimeFailure(context, unknownActionFailure(actionId));
+    if (run.result.ok) return writeRuntimeSuccess(context, run.result.output);
+    return writeRuntimeActionHttpResult(context, serializeRuntimeActionResult({ actionId, ...run }));
+  }
+
   private async createRuntimeActionRun(context: Context, actionId: string): Promise<Response> {
     const action = this.options.catalog.actionsById.get(actionId);
     if (!action) {
@@ -817,6 +842,14 @@ export class ConnectServer {
 
     const body = await readJsonBody(context);
     const input = body.input ?? {};
+    const prepared = body.prepared as PreparedAction | undefined;
+    if (body.prepared !== undefined && !isPreparedAction(body.prepared)) {
+      return writeRuntimeFailure(context, {
+        status: 400,
+        errorCode: "invalid_input",
+        message: "Invalid saved approval.",
+      });
+    }
     const connectionName = readConnectionName(context, body);
     const connectionId = optionalString(context.req.header("x-oo-connector-app-id"));
     const runtimeGrant = readRuntimeGrant(context);
@@ -842,6 +875,7 @@ export class ConnectServer {
           runtimeGrant,
           context.req.raw.signal,
           connectionId,
+          prepared,
         ),
       );
     }
@@ -866,6 +900,7 @@ export class ConnectServer {
           runtimeGrant,
           context.req.raw.signal,
           connectionId,
+          prepared,
         ),
       );
     }
@@ -878,7 +913,7 @@ export class ConnectServer {
         actionId,
         connectionName: connectionName ?? defaultConnectionName,
         connectionId,
-        input,
+        input: prepared ? { input, prepared } : input,
         runtimeTokenId: runtimeGrant?.tokenId,
       });
     } catch (error) {
@@ -929,6 +964,7 @@ export class ConnectServer {
       runtimeGrant,
       context.req.raw.signal,
       connectionId,
+      prepared,
     );
     const completed = await this.options.idempotency.complete({
       keyHash,
@@ -952,11 +988,13 @@ export class ConnectServer {
     runtimeGrant: RuntimeGrant | undefined,
     signal: AbortSignal | undefined,
     connectionId?: string,
+    prepared?: PreparedAction,
   ): Promise<RuntimeActionHttpResult> {
     try {
       const run = await this.options.actions.run({
         actionId,
         input,
+        prepared,
         caller: "http",
         connectionName,
         connectionId,

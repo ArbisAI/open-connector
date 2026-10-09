@@ -4,6 +4,7 @@ import type { ActionPolicyDecision, ActionPolicySnapshot } from "../../core/acti
 import type { ProviderHttpDispatchOptions } from "../../core/provider-http-dispatch.ts";
 import type { RuntimeLogger, ExecutionContext, ExecutionResult, TransitFileWriter } from "../../core/types.ts";
 import type { MarketplaceService } from "../../marketplace/marketplace-service.ts";
+import type { PreparedAction } from "../../providers/approval.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { SaasExecutionService } from "../../saas/saas-execution-service.ts";
 import type { IRunLogStore, RunLog, RunLogCaller, RunLogListInput, RunLogPage } from "../storage/runtime-store.ts";
@@ -11,12 +12,14 @@ import type { IRunLogStore, RunLog, RunLogCaller, RunLogListInput, RunLogPage } 
 import { ConnectionError } from "../../connection-service.ts";
 import { executeAction as executeProviderAction } from "../../core/execution.ts";
 import { withProviderHttpDispatch } from "../../core/provider-http-dispatch.ts";
+import { approvalInputHash, supportsPreparedAction } from "../../providers/approval.ts";
 import {
   ProviderDispatchRequestError,
   toProviderExecutionError,
   withProviderHttpDispatchResult,
 } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
+import { buildActionPreview } from "./action-preview.ts";
 import { safeRunLogError, summarizeForRunLog } from "./run-log-summary.ts";
 
 export interface ActionRunnerOptions {
@@ -34,6 +37,8 @@ export interface ActionRunnerOptions {
 export interface RunActionInput {
   actionId: string;
   input: unknown;
+  prepare?: boolean;
+  prepared?: PreparedAction;
   caller: RunLogCaller;
   connectionName?: string;
   connectionId?: string;
@@ -69,6 +74,48 @@ export class ActionRunner {
       () => this.runAction(input),
       this.options.providerHttpDispatch,
     );
+  }
+
+  async prepare(input: RunActionInput): Promise<ActionRunResult | undefined> {
+    const run = await this.run({ ...input, prepare: true });
+    if (!run?.result.ok) return run;
+    const action = this.options.catalog.actionsById.get(input.actionId)!;
+    const prepared = run.result.output as PreparedAction;
+    const fields = input.input as Record<string, unknown>;
+    const reference =
+      action.service === "googlecalendar" && fields.eventId
+        ? {
+            actionId: "googlecalendar.get_event",
+            input: { calendarId: fields.calendarId ?? "primary", eventId: fields.eventId },
+          }
+        : action.service === "googledrive" && fields.fileId
+          ? { actionId: "googledrive.files.get", input: { fileId: fields.fileId } }
+          : action.service === "notion" && fields.pageId
+            ? { actionId: "notion.retrieve_page", input: { pageId: fields.pageId } }
+            : action.service === "notion" && fields.blockId
+              ? { actionId: "notion.retrieve_block", input: { blockId: fields.blockId } }
+              : undefined;
+    let current: unknown;
+    if (reference && action.service === "googlecalendar") {
+      const saved = prepared.reads.find((read) =>
+        new URL(read.url).pathname.endsWith(`/events/${encodeURIComponent(String(fields.eventId))}`),
+      );
+      if (saved) current = JSON.parse(Buffer.from(saved.bodyBase64, "base64").toString("utf8"));
+    }
+    if (current === undefined && reference && this.options.catalog.actionsById.has(reference.actionId)) {
+      const read = await this.run({ ...input, ...reference, prepare: false, prepared: undefined });
+      if (read?.result.ok) current = read.result.output;
+    }
+    if (
+      action.service === "googlecalendar" &&
+      ["googlecalendar.update_event", "googlecalendar.patch_event"].includes(action.id) &&
+      prepared.request
+    ) {
+      const etag = (current as { etag?: string } | undefined)?.etag;
+      if (etag) prepared.request.headers["if-match"] = etag;
+    }
+    const preview = await buildActionPreview(action, run.connection, input.input, prepared, current);
+    return { ...run, result: { ok: true, output: { prepared, preview } } };
   }
 
   private async runAction(input: RunActionInput): Promise<ActionRunResult | undefined> {
@@ -152,6 +199,26 @@ export class ActionRunner {
           input.signal?.throwIfAborted();
           const saasReference = connection.kind === "saas" ? connection.reference : undefined;
           const resolvedConnection = connection;
+          if (
+            input.prepared &&
+            (input.prepared.version !== 1 ||
+              input.prepared.actionId !== action.id ||
+              input.prepared.connectionId !== connection.summary?.id ||
+              input.prepared.inputHash !== approvalInputHash(input.input))
+          ) {
+            return {
+              executionId,
+              auditPersisted: false,
+              result: {
+                ok: false,
+                error: {
+                  code: "approval_expired",
+                  message: "The saved approval no longer matches this action.",
+                  details: { outcome: "not_executed" },
+                },
+              },
+            };
+          }
           result = await withProviderHttpDispatchResult(
             {
               operation: "action",
@@ -164,28 +231,38 @@ export class ActionRunner {
             () =>
               executeProviderAction(
                 action,
-                saasReference
-                  ? async (actionInput) => {
-                      if (!this.options.saas)
-                        throw new SaasError("oauth_source_unavailable", "SaaS execution is unavailable.", 503);
-                      const remote = await this.options.saas.executeAction(
-                        saasReference,
-                        action.service,
-                        action.id,
-                        actionInput,
-                        input.signal,
-                      );
-                      remoteExecutionId = remote.executionId;
-                      return { ok: true, output: remote.output };
-                    }
-                  : resolvedConnection.kind === "marketplace"
-                    ? (actionInput) => this.options.marketplace!.execute(action.id, actionInput, input.signal)
-                    : executor,
+                input.prepare &&
+                  ((executor && !supportsPreparedAction(action.id)) || resolvedConnection.kind !== "local")
+                  ? async () => ({ ok: true, output: { reads: [] } })
+                  : saasReference
+                    ? async (actionInput) => {
+                        if (!this.options.saas)
+                          throw new SaasError("oauth_source_unavailable", "SaaS execution is unavailable.", 503);
+                        const remote = await this.options.saas.executeAction(
+                          saasReference,
+                          action.service,
+                          action.id,
+                          actionInput,
+                          input.signal,
+                        );
+                        remoteExecutionId = remote.executionId;
+                        return { ok: true, output: remote.output };
+                      }
+                    : resolvedConnection.kind === "marketplace"
+                      ? (actionInput) => this.options.marketplace!.execute(action.id, actionInput, input.signal)
+                      : executor,
                 input.input,
-                this.createExecutionContext(
-                  resolvedConnection.kind === "local" ? resolvedConnection.getCredential : async () => undefined,
-                  input.signal,
-                ),
+                {
+                  ...this.createExecutionContext(
+                    resolvedConnection.kind === "local" ? resolvedConnection.getCredential : async () => undefined,
+                    input.signal,
+                  ),
+                  approval: input.prepare
+                    ? { mode: "prepare", actionId: action.id }
+                    : input.prepared
+                      ? { mode: "execute", prepared: input.prepared }
+                      : undefined,
+                },
               ),
             this.options.providerHttpDispatch,
           );
@@ -220,6 +297,20 @@ export class ActionRunner {
                 };
         }
       }
+    }
+    if (input.prepare) {
+      if (result.ok)
+        result = {
+          ok: true,
+          output: {
+            ...(result.output as object),
+            version: 1,
+            actionId: action.id,
+            connectionId: connection?.summary?.id ?? "",
+            inputHash: approvalInputHash(input.input),
+          },
+        };
+      return { executionId, auditPersisted: false, result, connection: connection?.summary };
     }
     const completedAtMs = Date.now();
     const durationMs = completedAtMs - startedAtMs;
