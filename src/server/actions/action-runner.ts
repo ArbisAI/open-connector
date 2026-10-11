@@ -19,7 +19,7 @@ import {
   withProviderHttpDispatchResult,
 } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
-import { buildActionPreview } from "./action-preview.ts";
+import { buildActionPreview, resolvePreviewFolders } from "./action-preview.ts";
 import { safeRunLogError, summarizeForRunLog } from "./run-log-summary.ts";
 
 export interface ActionRunnerOptions {
@@ -115,6 +115,19 @@ export class ActionRunner {
       if (etag) prepared.request.headers["if-match"] = etag;
     }
     const preview = await buildActionPreview(action, run.connection, input.input, prepared, current);
+    if (this.options.catalog.actionsById.has("googledrive.files.get")) {
+      await resolvePreviewFolders(preview, async (fileId) => {
+        const read = await this.run({
+          ...input,
+          connectionId: run.connection?.id ?? input.connectionId,
+          actionId: "googledrive.files.get",
+          input: { fileId, fields: "id,name,mimeType" },
+          prepare: false,
+          prepared: undefined,
+        });
+        return read?.result.ok ? read.result.output : undefined;
+      });
+    }
     return { ...run, result: { ok: true, output: { prepared, preview } } };
   }
 
