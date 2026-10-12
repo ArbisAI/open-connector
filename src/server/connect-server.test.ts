@@ -63,6 +63,19 @@ afterEach(() => {
   for (const database of requestDatabases.splice(0)) database.close();
 });
 
+it.each([
+  { method: "GET", path: "/v1/users/connectors" },
+  { method: "POST", path: "/v1/users/connectors" },
+  { method: "DELETE", path: "/v1/users/connectors/fixture-mapping" },
+])("does not expose the retired user mapping API: $method $path", async ({ method, path }) => {
+  const app = createTestServer([apiKeyProvider], { auth: { runtimeToken: "fixture-runtime" } }).createApp();
+  const response = await app.request(path, {
+    method,
+    headers: { authorization: "Bearer fixture-runtime", "x-arbis-user-id": "fixture-user" },
+  });
+  expect(response.status).toBe(404);
+});
+
 const oauthProvider: ProviderDefinition = {
   service: "oauth_example",
   displayName: "OAuth Example",
@@ -842,6 +855,13 @@ describe("ConnectServer", () => {
       headers: { authorization: "Bearer local-token" },
     });
     expect(runtimeUnauthorized.status).toBe(401);
+    await expect(runtimeUnauthorized.json()).resolves.toEqual({
+      success: false,
+      message: "A valid local bearer token is required.",
+      data: null,
+      errorCode: "unauthorized",
+      meta: {},
+    });
 
     const runtimeAuthorized = await app.request("/v1/actions", {
       headers: { authorization: "Bearer runtime-token" },
@@ -3345,7 +3365,15 @@ describe("ConnectServer", () => {
       body: JSON.stringify({ input: { message: "hello" } }),
     };
 
-    expect((await app.request("/v1/actions/example.echo", request)).status).toBe(500);
+    const failed = await app.request("/v1/actions/example.echo", request);
+    expect(failed.status).toBe(500);
+    await expect(failed.json()).resolves.toEqual({
+      success: false,
+      message: "Internal server error.",
+      data: null,
+      errorCode: "internal_error",
+      meta: {},
+    });
     const duplicate = await app.request("/v1/actions/example.echo", request);
     expect(duplicate.status).toBe(409);
     await expect(duplicate.json()).resolves.toMatchObject({
@@ -4002,7 +4030,6 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
     uploadTransitFile: options.uploadTransitFile,
     runtimeTokens,
     runtimePolicyStore: options.runtimePolicyStore ?? new MemoryRuntimePolicyStore(),
-    userConnectionStore: requestDatabase.userConnectionStore,
     registerStaticRoutes: staticRoot ? (app) => registerStaticRoutes(app, { root: staticRoot }) : undefined,
     auth: {
       ...options.auth,

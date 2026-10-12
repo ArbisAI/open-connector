@@ -107,6 +107,13 @@ export function createLocalAuthMiddleware(options: LocalAuthOptions): Middleware
         message: "A valid administrator bearer token is required.",
       });
     }
+    if (context.req.path.startsWith("/v1/")) {
+      return writeRuntimeFailure(context, {
+        status: 401,
+        errorCode: "unauthorized",
+        message: "A valid local bearer token is required.",
+      });
+    }
     return jsonError(context, 401, "unauthorized", "A valid local bearer token is required.");
   };
 }

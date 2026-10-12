@@ -81,8 +81,15 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
         createError,
       });
     }
+    // A provider runtime may report an absolute expiry without a lifetime, or a
+    // lifetime without an expiry. Keep a usable lifetime from this response and
+    // fall back to the stored one, so dropping it cannot leave a later refresh
+    // that omits `expires_in` without any expiry to derive. `expiresAtFromLifetime`
+    // is the shared usability rule: non-positive and absurd lifetimes are unusable.
     const expiresIn =
-      refreshed.expiresAt === undefined ? credential.metadata.expires_in : refreshed.metadata.expires_in;
+      expiresAtFromLifetime(refreshed.metadata.expires_in) === undefined
+        ? credential.metadata.expires_in
+        : refreshed.metadata.expires_in;
 
     return {
       ...refreshed,

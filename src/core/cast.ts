@@ -278,13 +278,16 @@ export function optionalNumberLike(value: unknown): number | undefined {
 /**
  * Return an integer from a number or numeric string. Examples:
  * `integer("2", "count") => 2`, `integer("x", "count")` throws.
+ *
+ * A blank or whitespace-only string is rejected rather than parsed as zero.
  */
 export function integer(
   value: unknown,
   fieldName: string,
   createError: CastErrorFactory = (message) => new CastError(message),
 ): number {
-  const parsed = typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : NaN;
+  const parsed =
+    typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
   if (Number.isInteger(parsed)) {
     return parsed;
   }
@@ -295,13 +298,16 @@ export function integer(
 /**
  * Return an integer from a number or numeric string when present. Examples:
  * `optionalIntegerLike("2", "count") => 2`, `optionalIntegerLike("", "count") => undefined`.
+ *
+ * A blank or whitespace-only string is reported as missing rather than parsed, because
+ * `Number(" ")` is `0` and a blank field would otherwise surface as a real zero.
  */
 export function optionalIntegerLike(
   value: unknown,
   fieldName: string,
   createError: CastErrorFactory = (message) => new CastError(message),
 ): number | undefined {
-  if (value == null || value === "") {
+  if (value == null || (typeof value === "string" && value.trim() === "")) {
     return undefined;
   }
 

@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AesGcmSecretCodec } from "../../secrets/secret-codec.ts";
 import { connectionRequestStoreTests } from "../connection-request-store.cases.ts";
+import { retiredUserMappingMigrationSource } from "../migration-retirement.fixtures.ts";
 import { createDirectoryMigrationSource, defaultMigrationSource } from "../migration-source.ts";
 import { RuntimeTokenService } from "../runtime-token-service.ts";
 import { saasProjectStoreTests, saasMaintenanceTests } from "../saas-project-store.cases.ts";
@@ -21,11 +22,96 @@ const githubProfile = {
   grantedScopes: [],
 };
 
+const retiredMappingCredential = {
+  authType: "api_key" as const,
+  apiKey: "fixture-only",
+  values: { apiKey: "fixture-only" },
+  profile: githubProfile,
+  metadata: {},
+};
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 describe("SqliteRuntimeDatabase", () => {
+  it("creates fresh databases without retired user mappings and stores encrypted connections", async () => {
+    const path = await createDatabasePath();
+    const database = new SqliteRuntimeDatabase(path, { secretCodec: new AesGcmSecretCodec("retirement-test") });
+    try {
+      await database.connectionStore.set("github", "owned", retiredMappingCredential);
+      await expect(database.connectionStore.get("github", "owned")).resolves.toMatchObject({
+        credential: { apiKey: "fixture-only" },
+      });
+      const inspector = new DatabaseSync(path, { readOnly: true });
+      try {
+        expect(
+          inspector
+            .prepare("select name from sqlite_master where type = 'table' and name in ('users', 'user_connections')")
+            .all(),
+        ).toEqual([]);
+        expect(
+          inspector.prepare("select name from runtime_migrations where name = '0018_user_connections.sql'").all(),
+        ).toEqual([]);
+        expect(inspector.prepare("select value from connections").get()).toMatchObject({
+          value: expect.stringMatching(/^enc:v1:/),
+        });
+      } finally {
+        inspector.close();
+      }
+    } finally {
+      database.close();
+    }
+  });
+
+  it("reopens databases with retired user mappings without changing data or migration history", async () => {
+    const path = await createDatabasePath();
+    const secretCodec = new AesGcmSecretCodec("retirement-test");
+    const previous = new SqliteRuntimeDatabase(path, { secretCodec, migrations: retiredUserMappingMigrationSource });
+    const connection = await previous.connectionStore.set("github", "owned", retiredMappingCredential);
+    previous.close();
+    const inspector = new DatabaseSync(path);
+    let encryptedValue: unknown;
+    try {
+      inspector.exec(
+        "insert into users values ('fixture-user', '2026-10-07'); insert into user_connections values ('fixture-mapping', 'fixture-user', 'github', '2026-10-07', '2026-10-07')",
+      );
+      encryptedValue = inspector.prepare("select value from connections where id = ?").get(connection.id)?.value;
+    } finally {
+      inspector.close();
+    }
+
+    const reopened = new SqliteRuntimeDatabase(path, { secretCodec });
+    try {
+      await expect(reopened.connectionStore.get("github", "owned")).resolves.toEqual(connection);
+      const retained = new DatabaseSync(path, { readOnly: true });
+      try {
+        expect(retained.prepare("select value from connections where id = ?").get(connection.id)?.value).toBe(
+          encryptedValue,
+        );
+        expect(retained.prepare("select * from users").all()).toEqual([
+          { id: "fixture-user", created_at: "2026-10-07" },
+        ]);
+        expect(retained.prepare("select * from user_connections").all()).toEqual([
+          {
+            id: "fixture-mapping",
+            user_id: "fixture-user",
+            connection_service: "github",
+            created_at: "2026-10-07",
+            updated_at: "2026-10-07",
+          },
+        ]);
+        expect(
+          retained.prepare("select name from runtime_migrations where name = '0018_user_connections.sql'").all(),
+        ).toEqual([{ name: "0018_user_connections.sql" }]);
+      } finally {
+        retained.close();
+      }
+    } finally {
+      reopened.close();
+    }
+  });
+
   it("logs applied migrations and the ready state", async () => {
     const databasePath = await createDatabasePath();
     const entries: Array<{ fields: Record<string, unknown>; message: string }> = [];
@@ -60,7 +146,6 @@ describe("SqliteRuntimeDatabase", () => {
       "0015_saas_cleanup_runtime.sql",
       "0016_trigger_policy.sql",
       "0017_trigger_subscriptions.sql",
-      "0018_user_connections.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(
       migrations.map((migration) => ({ fields: { migration }, message: "sqlite migration started" })),

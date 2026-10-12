@@ -22,7 +22,8 @@ export const gmailSettingsBasicScopes: string[] = [gmailSettingsBasicScope];
 export const gmailOAuthScopes: string[] = [gmailModifyScope, gmailLabelsScope, gmailSettingsBasicScope];
 
 /**
- * The scopes a user OAuth authorization may request — the menu, not a minimum.
+ * Default user OAuth scopes. Together with gmailOptionalScopes, these form
+ * the scopes a user OAuth authorization may request — the menu, not a minimum.
  *
  * `gmail.readonly` is here and not in {@link gmailOAuthScopes} because the two
  * lists answer different questions. That one asks "what does a service account
@@ -30,8 +31,8 @@ export const gmailOAuthScopes: string[] = [gmailModifyScope, gmailLabelsScope, g
  * adding it would be redundant at best and, through domain-wide delegation,
  * breaking at worst.
  *
- * This one is what `filterDeclaredScopes` intersects a caller's
- * `requestedScopes` against, so a scope absent here cannot be requested AT ALL.
+ * `filterDeclaredScopes` intersects a caller's `requestedScopes` against this
+ * list and gmailOptionalScopes, so a scope absent from both cannot be requested.
  * Leaving `readonly` out therefore forced every read-only integration to
  * authorize `gmail.modify` — write, label and trash on the user's mailbox — in
  * order to call actions that declare `gmailReadScopes`. That is the opposite of
@@ -39,8 +40,8 @@ export const gmailOAuthScopes: string[] = [gmailModifyScope, gmailLabelsScope, g
  * that more was granted than the integration can use.
  *
  * Note for anyone storing a client config WITHOUT `requestedScopes`:
- * `getEffectiveScopes` falls back to this whole list, so such a config now asks
- * for four scopes rather than three. `readonly` is subsumed by `modify`, so no
+ * `getEffectiveScopes` falls back to this whole list, so such a config asks
+ * for the same four default scopes. `readonly` is subsumed by `modify`, so no
  * new capability is granted — but the consent screen gains a line, and a
  * deployment that wants the narrow set should say so explicitly with
  * `requestedScopes`, which is the correct posture regardless.
@@ -51,3 +52,6 @@ export const gmailAuthorizableScopes: string[] = [
   gmailLabelsScope,
   gmailSettingsBasicScope,
 ];
+
+/** Narrow compose and send grants, available only through requestedScopes. */
+export const gmailOptionalScopes: string[] = [gmailComposeScope, gmailSendScope];

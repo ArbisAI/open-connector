@@ -24,6 +24,8 @@ export type ProviderAuthSetup =
       clientFields: OAuthClientConfigFieldDefinition[];
       clientSetup?: OAuth2AuthDefinition["clientSetup"];
       scopes: string[];
+      /** Additional scopes for explicit selection; requestedScopes replaces the default list. */
+      optionalScopes?: string[];
       authorizationOptions?: OAuth2AuthDefinition["authorizationOptions"];
     };
 
@@ -42,6 +44,7 @@ export function describeProviderAuth(auth: ProviderAuthDefinition): ProviderAuth
         clientFields: oauthClientFields(auth),
         clientSetup: auth.clientSetup,
         scopes: auth.scopes,
+        optionalScopes: auth.optionalScopes,
         authorizationOptions: auth.authorizationOptions,
       };
   }

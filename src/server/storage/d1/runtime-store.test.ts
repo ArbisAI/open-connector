@@ -1,4 +1,5 @@
 import type { RuntimeActionHttpResult } from "../../api/runtime-api.ts";
+import type { D1DatabaseBinding, D1PreparedStatementBinding } from "../../cloudflare/cloudflare-bindings.ts";
 
 import { beforeEach, describe, expect, it } from "vitest";
 import { AesGcmSecretCodec } from "../../secrets/secret-codec.ts";
@@ -296,6 +297,36 @@ describe("D1RuntimeDatabase", () => {
     ]);
 
     expect(results.map((result) => result.kind).sort()).toEqual(["acquired", "in_progress"]);
+  });
+
+  // The claim used to issue its expiry delete, insert, and select as separate
+  // statements, giving a concurrent claim's expiry sweep a window to remove the
+  // competing row between the insert conflict and the select. That surfaced the
+  // internal "record disappeared" error (a 500) instead of the stored result.
+  it("keeps the stored claim when a concurrent expiry sweep removes the competing row", async () => {
+    const d1 = new SqliteD1Database();
+    await d1
+      .prepare(
+        `
+        insert into idempotency_records (key_hash, claim_id, request_hash, state, response_value, created_at, expires_at)
+        values (?, ?, ?, 'in_progress', null, ?, ?)
+      `,
+      )
+      .bind("key-1", "claim-existing", "request-1", "2026-06-29T23:59:59.000Z", "2026-06-30T00:00:01.000Z")
+      .run();
+    const racing = new SweepingD1Database(d1);
+    racing.armSweep("key-1");
+    const database = new D1RuntimeDatabase(racing, { secretCodec: new AesGcmSecretCodec("d1-race-test") });
+
+    await expect(
+      database.idempotencyStore.claim({
+        keyHash: "key-1",
+        requestHash: "request-1",
+        claimId: "claim-racing",
+        now: "2026-06-30T00:00:00.000Z",
+        expiresAt: "2026-07-01T00:00:00.000Z",
+      }),
+    ).resolves.toEqual({ kind: "in_progress" });
   });
 
   it("detects idempotency conflicts and replays completed responses", async () => {
@@ -611,3 +642,100 @@ describe("D1 connection requests", () => {
   triggerStoreTests(() => database);
   saasProjectStoreTests(() => database);
 });
+
+/**
+ * A D1 database double that lets another instance's expiry sweep run between the
+ * claim's standalone statements, which is the interleaving a transactional batch
+ * removes. The sweep fires only after a conflicting insert on the standalone
+ * path; a batched claim has no such window.
+ */
+class SweepingD1Database implements D1DatabaseBinding {
+  private sweepKeyHash: string | undefined;
+  private readonly database: SqliteD1Database;
+
+  constructor(database: SqliteD1Database) {
+    this.database = database;
+  }
+
+  armSweep(keyHash: string): void {
+    this.sweepKeyHash = keyHash;
+  }
+
+  prepare(query: string): D1PreparedStatementBinding {
+    return new SweepingPreparedStatement(this, this.database.prepare(query), query);
+  }
+
+  async batch(statements: D1PreparedStatementBinding[]): Promise<{ results: Record<string, unknown>[] | null }[]> {
+    // Sweep after a conflicting batched insert too, before the caller can issue
+    // any standalone lookup. Otherwise a claim that leaves its select outside
+    // the transaction would still pass this test while keeping the race.
+    const insertIndex = statements.findIndex(
+      (statement) =>
+        statement instanceof SweepingPreparedStatement &&
+        this.sweepKeyHash !== undefined &&
+        statement.insertKeyHash() === this.sweepKeyHash,
+    );
+    const results = await this.database.batch(statements);
+    if (insertIndex !== -1 && (results[insertIndex]?.results?.length ?? 0) === 0) {
+      await this.sweepAfterInsertConflict(String(this.sweepKeyHash));
+    }
+    return results;
+  }
+
+  async sweepAfterInsertConflict(keyHash: string): Promise<void> {
+    if (this.sweepKeyHash !== keyHash) {
+      return;
+    }
+    this.sweepKeyHash = undefined;
+    await this.database.prepare("delete from idempotency_records where key_hash = ?").bind(keyHash).run();
+  }
+}
+
+class SweepingPreparedStatement implements D1PreparedStatementBinding {
+  private readonly owner: SweepingD1Database;
+  private readonly statement: D1PreparedStatementBinding & { readRows?(): Record<string, unknown>[] };
+  private readonly query: string;
+  private readonly values: unknown[];
+
+  constructor(
+    owner: SweepingD1Database,
+    statement: D1PreparedStatementBinding & { readRows?(): Record<string, unknown>[] },
+    query: string,
+    values: unknown[] = [],
+  ) {
+    this.owner = owner;
+    this.statement = statement;
+    this.query = query;
+    this.values = values;
+  }
+
+  bind(...values: unknown[]): D1PreparedStatementBinding {
+    return new SweepingPreparedStatement(this.owner, this.statement.bind(...values), this.query, values);
+  }
+
+  first<T = Record<string, unknown>>(): Promise<T | null> {
+    return this.statement.first<T>();
+  }
+
+  all<T = Record<string, unknown>>(): Promise<{ results: T[] }> {
+    return this.statement.all<T>();
+  }
+
+  /** The key this statement would insert, when it is an idempotency insert. */
+  insertKeyHash(): string | undefined {
+    return this.query.includes("insert into idempotency_records") ? String(this.values[0]) : undefined;
+  }
+
+  async run(): Promise<{ success: boolean; meta: { changes?: number } }> {
+    const result = await this.statement.run();
+    if (this.query.includes("insert into idempotency_records") && (result.meta.changes ?? 0) === 0) {
+      await this.owner.sweepAfterInsertConflict(String(this.values[0]));
+    }
+    return result;
+  }
+
+  // The D1 test double executes batch statements through this hook.
+  readRows(): Record<string, unknown>[] {
+    return this.statement.readRows?.() ?? [];
+  }
+}

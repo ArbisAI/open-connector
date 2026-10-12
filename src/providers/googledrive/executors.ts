@@ -6,7 +6,7 @@ import type { OAuthProviderContext } from "../provider-runtime.ts";
 
 import { randomUUID } from "node:crypto";
 import { requiredRawString, requiredString } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   defineProviderProxy,
   providerProxyEndpointPrefixes,
@@ -563,12 +563,13 @@ async function downloadFile(input: Record<string, unknown>, context: ActionConte
     }),
     timeoutMs: 300_000,
   });
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: "Google Drive download",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const file = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
 
   return {
     fileId,
@@ -599,12 +600,13 @@ async function exportFile(input: Record<string, unknown>, context: ActionContext
   const mimeType = response.headers.get("content-type") ?? requestedMimeType;
   const extension = extensionForExportMimeType(mimeType);
   const name = `${fileId}${extension}`;
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: context.transitFiles.maxBytes,
+  const upload = await storeResponseInTransit(response, context.transitFiles, {
+    name,
+    mimeType,
     fieldName: "Google Drive export",
     createError: (message) => new ProviderRequestError(413, message),
+    signal: context.signal,
   });
-  const upload = await context.transitFiles.create(new File([Uint8Array.from(bytes)], name, { type: mimeType }));
 
   return {
     fileId,

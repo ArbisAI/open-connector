@@ -23,7 +23,6 @@ import type { IRuntimeTokenStore, RuntimeTokenRecord } from "../runtime-token-se
 
 import { parseRuntimeActionHttpResult } from "../../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../../secrets/secret-codec-core.ts";
-import { UserConnectionStore } from "../../user-api/user-connection-store.ts";
 import { ConnectionRequestStore } from "../connection-request-store.ts";
 import { SqlConnectionStore } from "../connection-store.ts";
 import {
@@ -58,7 +57,6 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
   readonly runLogStore: D1RunLogStore;
   readonly idempotencyStore: D1IdempotencyStore;
   readonly marketplaceStore: IMarketplaceStore;
-  readonly userConnectionStore: UserConnectionStore;
 
   constructor(database: D1DatabaseBinding, options: D1RuntimeDatabaseOptions = {}) {
     const secretCodec = options.secretCodec ?? new PlainTextSecretCodec();
@@ -77,11 +75,6 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
     this.runLogStore = new D1RunLogStore(database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new D1IdempotencyStore(database, secretCodec);
     this.marketplaceStore = new D1MarketplaceStore(database);
-    // Application-side user-to-connection-service mappings, independent of the runtime's own connection ownership.
-    this.userConnectionStore = new UserConnectionStore(async (statements) => {
-      const results = await database.batch(statements.map(({ sql, values }) => database.prepare(sql).bind(...values)));
-      return results.map((result) => result.results ?? []);
-    });
   }
 }
 
@@ -338,28 +331,38 @@ export class D1IdempotencyStore implements IIdempotencyStore {
   }
 
   async claim(input: IdempotencyClaimInput): Promise<IdempotencyClaimResult> {
-    await this.database.prepare("delete from idempotency_records where expires_at <= ?").bind(input.now).run();
-
-    const inserted = await this.database
-      .prepare(
-        `
-        insert into idempotency_records (
-          key_hash, claim_id, request_hash, state, response_value, created_at, expires_at
+    // D1 batches run in a single transaction, so the delete, insert, and select
+    // behave like the SQLite and PostgreSQL claim, which wrap the same three
+    // statements in one transaction. Issued separately, a concurrent claim's
+    // expiry sweep can remove the competing row between the insert conflict and
+    // the select, and the claim failed with an internal error instead of the
+    // stored in_progress, conflict, or completed result.
+    const results = await this.database.batch([
+      this.database.prepare("delete from idempotency_records where expires_at <= ?").bind(input.now),
+      this.database
+        .prepare(
+          `
+          insert into idempotency_records (
+            key_hash, claim_id, request_hash, state, response_value, created_at, expires_at
+          )
+          values (?, ?, ?, 'in_progress', null, ?, ?)
+          on conflict(key_hash) do nothing
+          returning claim_id
+        `,
         )
-        values (?, ?, ?, 'in_progress', null, ?, ?)
-        on conflict(key_hash) do nothing
-      `,
-      )
-      .bind(input.keyHash, input.claimId, input.requestHash, input.now, input.expiresAt)
-      .run();
-    if ((inserted.meta.changes ?? 0) > 0) {
+        .bind(input.keyHash, input.claimId, input.requestHash, input.now, input.expiresAt),
+      this.database
+        .prepare("select request_hash, state, response_value from idempotency_records where key_hash = ?")
+        .bind(input.keyHash),
+    ]);
+
+    // Only this claim's insert returns a row; a conflicting insert returns none
+    // and leaves the existing record to the select, exactly like the row count
+    // the other backends read from their insert.
+    if ((results[1]?.results?.length ?? 0) > 0) {
       return { kind: "acquired" };
     }
-
-    const row = await this.database
-      .prepare("select request_hash, state, response_value from idempotency_records where key_hash = ?")
-      .bind(input.keyHash)
-      .first<RuntimeRow>();
+    const row = results[2]?.results?.[0];
     if (!row) {
       throw new Error("Idempotency record disappeared while claiming it.");
     }

@@ -1,7 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { googlecalendarActions } from "./actions.ts";
-import { googlecalendarOAuthScopes } from "./scopes.ts";
+import { googlecalendarOAuthScopes, googlecalendarOptionalScopes } from "./scopes.ts";
 import { snapshot as triggerSnapshot0_0 } from "./trigger-on-event-changed.definition.ts";
 import { triggerPermissions } from "./trigger-permissions.ts";
 
@@ -30,6 +30,7 @@ export const provider: ProviderDefinition = {
         defaultSelected: id.endsWith(".readonly") || ["openid", "email", "profile"].includes(id),
         risk: "sensitive",
       })),
+      optionalScopes: googlecalendarOptionalScopes,
       tokenEndpointAuthMethod: "client_secret_post",
       authorizationParams: {
         access_type: "offline",

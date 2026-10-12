@@ -34,6 +34,38 @@ describe("createNodeTransitFileUpload", () => {
     await expect(service.read(result.fileId).then((stored) => stored.name)).resolves.toBe("发票.pdf");
   });
 
+  it("repairs an unpaired surrogate from an extended multipart filename", async () => {
+    const { service, tempDir } = await createService();
+    const upload = createNodeTransitFileUpload({ transitFiles: service, tempDir });
+    const boundary = "connect-boundary";
+    const body = new TextEncoder().encode(
+      [
+        `--${boundary}`,
+        `Content-Disposition: form-data; name="file"; filename*=utf-16le''%00%D8%2E%00%70%00%64%00%66%00`,
+        "Content-Type: application/pdf",
+        "",
+        "payload",
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+    );
+
+    const result = await upload(
+      new Request("http://localhost/api/files", {
+        method: "POST",
+        headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+        body,
+      }),
+    );
+
+    expect(result.name).toBe("\ufffd.pdf");
+    await expect(service.read(result.fileId).then((stored) => stored.name)).resolves.toBe("\ufffd.pdf");
+    const response = await service.response(result.fileId);
+    expect(response.headers.get("content-disposition")).toBe(
+      "attachment; filename=\"_.pdf\"; filename*=UTF-8''%EF%BF%BD.pdf",
+    );
+  });
+
   it("rejects an oversized stream and removes the partial temporary file", async () => {
     const { service, tempDir } = await createService({ maxBytes: 4 });
     const upload = createNodeTransitFileUpload({ transitFiles: service, tempDir });

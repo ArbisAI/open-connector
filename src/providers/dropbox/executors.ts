@@ -16,7 +16,7 @@ import {
   optionalString as asOptionalString,
   requiredRecord,
 } from "../../core/cast.ts";
-import { readBoundedResponseBytes } from "../../core/request.ts";
+import { storeResponseInTransit } from "../../core/request.ts";
 import {
   createProviderFetch,
   createProviderProxyUrl,
@@ -653,12 +653,12 @@ async function storeDropboxDownload(
   }
 
   const mimeType = optionalString(response.headers.get("content-type")) ?? "application/octet-stream";
-  const bytes = await readBoundedResponseBytes(response, {
-    maxBytes: transitFiles.maxBytes,
+  const file = await storeResponseInTransit(response, transitFiles, {
+    name: transitName,
+    mimeType,
     fieldName: "Dropbox download",
     createError: (message) => new ProviderRequestError(413, message),
   });
-  const file = await transitFiles.create(new File([Uint8Array.from(bytes)], transitName, { type: mimeType }));
 
   return {
     fileId,
