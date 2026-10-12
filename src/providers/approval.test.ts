@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildActionPreview, resolvePreviewFolders } from "../server/actions/action-preview.ts";
 import { approvedHttpFetch, prepareHttpAction, runApprovedHttpAction } from "./approval.ts";
 import { gmailActionHandlers } from "./gmail/executors.ts";
-import { encodeMimeMessage } from "./gmail/message.ts";
+import { encodeMimeMessage } from "./gmail/mime.ts";
 import { googlecalendarEventActionHandlers } from "./googlecalendar/runtime-events.ts";
 import { defineProviderExecutors } from "./provider-runtime.ts";
 
