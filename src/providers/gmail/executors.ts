@@ -136,6 +136,7 @@ export const gmailActionHandlers: ProviderActionHandlers<typeof service, ActionH
       to: output.to,
       date: readHeader(message.payload?.headers ?? [], "Date"),
       body: output.messageText,
+      attachmentList: output.attachmentList,
     };
   },
   fetch_message_by_message_id(input, { userId, accessToken, fetcher }) {
