@@ -54,6 +54,7 @@ export interface SavedHttpRead {
 }
 
 export interface PreparedAction {
+  createdAt?: number;
   version: 1;
   actionId: string;
   connectionId: string;

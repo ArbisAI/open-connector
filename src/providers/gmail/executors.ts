@@ -19,6 +19,7 @@ import {
   optionalString,
 } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
+import { googleProfile } from "../../oauth/google-profile.ts";
 import {
   googleBearerProxyAuth,
   googleServiceAccountValidator,
@@ -296,14 +297,8 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
 });
 
 export const credentialValidators: CredentialValidators = {
-  async oauth2(input, { fetcher }) {
-    const profile = await getProfile("me", input.accessToken, fetcher);
-    return {
-      profile: {
-        accountId: profile.emailAddress,
-        displayName: profile.emailAddress,
-      },
-    };
+  async oauth2(input, options) {
+    return { profile: await googleProfile(input, options) };
   },
   customCredential: googleServiceAccountValidator(service, gmailOAuthScopes),
 };

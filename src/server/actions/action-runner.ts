@@ -20,6 +20,7 @@ import {
 } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
 import { buildActionPreview, resolvePreviewFolders } from "./action-preview.ts";
+import { companyDispatchOptions } from "./company-authorization.ts";
 import { safeRunLogError, summarizeForRunLog } from "./run-log-summary.ts";
 
 export interface ActionRunnerOptions {
@@ -64,7 +65,7 @@ export class ActionRunner {
   private readonly options: ActionRunnerOptions;
 
   constructor(options: ActionRunnerOptions) {
-    this.options = options;
+    this.options = { ...options, providerHttpDispatch: companyDispatchOptions(options.providerHttpDispatch) };
   }
 
   async run(input: RunActionInput): Promise<ActionRunResult | undefined> {
@@ -81,6 +82,7 @@ export class ActionRunner {
     if (!run?.result.ok) return run;
     const action = this.options.catalog.actionsById.get(input.actionId)!;
     const prepared = run.result.output as PreparedAction;
+    prepared.createdAt = Date.now();
     const fields = input.input as Record<string, unknown>;
     const reference =
       action.service === "googlecalendar" && fields.eventId
@@ -231,6 +233,16 @@ export class ActionRunner {
                 },
               },
             };
+          }
+          if (
+            process.env.COMPANY_ONBOARDING_ENABLED === "true" &&
+            !input.prepare &&
+            action.operationType !== "read" &&
+            (!input.prepared?.createdAt ||
+              Date.now() - input.prepared.createdAt > 600000 ||
+              input.prepared.createdAt > Date.now())
+          ) {
+            throw new ConnectionError("invalid_input", "A current approval is required for this write.");
           }
           result = await withProviderHttpDispatchResult(
             {

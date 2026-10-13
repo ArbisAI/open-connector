@@ -15,6 +15,7 @@ import {
   withProviderHttpDispatchResult,
 } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
+import { companyDispatchOptions } from "../actions/company-authorization.ts";
 import { mapConnectionErrorStatus } from "../api/runtime-api.ts";
 
 export type ProxyFailureStatus = 400 | 402 | 403 | 404 | 409 | 413 | 429 | 500 | 501 | 502 | 503 | 504;
@@ -65,7 +66,7 @@ export class ProxyRunner {
   private readonly options: ProxyRunnerOptions;
 
   constructor(options: ProxyRunnerOptions) {
-    this.options = options;
+    this.options = { ...options, providerHttpDispatch: companyDispatchOptions(options.providerHttpDispatch) };
   }
 
   async run(input: RunProxyInput): Promise<ProxyRunResult> {

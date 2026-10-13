@@ -584,6 +584,20 @@ export class ConnectionService {
     return { ...expected, credential };
   }
 
+  /** Company access has already been denied by the authority. Keep failed revocations retryable. */
+  async disconnectForCompany(appId: string, revoke: boolean): Promise<void> {
+    const stored = await this.getStoredConnection(appId);
+    if (revoke) {
+      const outcome = await this.revokeDeletedCredential(stored.service, stored.connectionName, stored);
+      if (outcome === "failed")
+        throw new ConnectionError(
+          "oauth_token_revocation_failed",
+          "Provider revocation could not be confirmed. Retry cleanup.",
+        );
+    }
+    await this.store.delete(stored.service, stored.connectionName);
+  }
+
   async disconnect(
     service: string,
     connectionNameInput?: string,
@@ -1021,6 +1035,9 @@ export class ConnectionService {
       accountId,
       displayName,
       grantedScopes: normalizeGrantedScopes(grantedScopes),
+      googleSubject: validation.profile?.googleSubject ?? previous?.profile.googleSubject,
+      hostedDomain: validation.profile?.hostedDomain ?? previous?.profile.hostedDomain,
+      emailVerified: validation.profile?.emailVerified ?? previous?.profile.emailVerified,
     };
   }
 
