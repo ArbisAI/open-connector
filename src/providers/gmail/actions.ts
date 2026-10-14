@@ -274,7 +274,7 @@ export const gmailActions: ActionDefinition[] = [
     name: "download_attachment",
     operationType: "read",
     description:
-      "Decode a Gmail attachment into a downloadable transit file with bounded memory. Requires the filesystem transit backend; the configured file size limit still applies.",
+      "Decode a Gmail attachment into a downloadable transit file with bounded memory. Requires the filesystem transit backend; the configured file size limit still applies. Copy fileName and mimeType from the message attachment entry. Omitting mimeType stores application/octet-stream, and chat then reports the file as unreadable even when it is a PDF or Word document.",
     requiredScopes: gmailReadScopes,
     properties: withUser({
       messageId,
@@ -354,7 +354,8 @@ export const gmailActions: ActionDefinition[] = [
   action({
     name: "get_message",
     operationType: "read",
-    description: "Get a Gmail message by message ID with a simplified normalized output.",
+    description:
+      "Get a Gmail message by message ID. Returns headers, body text, and attachment metadata without attachment bytes. To read a file whose attachmentId is present, inspect for the download-attachment action and pass messageId plus that entry's attachmentId, filename as fileName, and mimeType. Skip entries whose attachmentId is null; those bytes stay in the message part and are not separately downloadable.",
     requiredScopes: gmailReadScopes,
     properties: { messageId },
     required: ["messageId"],
@@ -367,6 +368,9 @@ export const gmailActions: ActionDefinition[] = [
         to: s.string(),
         date: s.string(),
         body: s.string(),
+        attachmentList: s.array(attachmentSummary, {
+          description: "Message attachments and inline resources. Bytes are not included.",
+        }),
       },
       { required: ["messageId", "threadId"], description: "Simplified Gmail message." },
     ),
