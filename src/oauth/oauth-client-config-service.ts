@@ -117,7 +117,22 @@ export class OAuthClientConfigService {
 
   async getConfig(service: string): Promise<OAuthClientConfig | undefined> {
     this.getOAuthDefinition(service);
-    return normalizeStoredOAuthClientConfig(await this.store.get(service));
+    const configured = normalizeStoredOAuthClientConfig(await this.store.get(service));
+    if (configured || service !== "googleworkspace") return configured;
+    // Reuse the existing Google app, with a narrow default; never alter its Gmail configuration.
+    const gmail = normalizeStoredOAuthClientConfig(await this.store.get("gmail"));
+    return gmail
+      ? this.normalizeConfig(service, {
+          ...gmail,
+          requestedScopes: [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/calendar.readonly",
+          ],
+        })
+      : undefined;
   }
 
   async upsertConfig(input: OAuthClientConfigInput & { service: string }): Promise<OAuthClientConfigSummary> {

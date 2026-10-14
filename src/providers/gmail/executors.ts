@@ -136,6 +136,7 @@ export const gmailActionHandlers: ProviderActionHandlers<typeof service, ActionH
       to: output.to,
       date: readHeader(message.payload?.headers ?? [], "Date"),
       body: output.messageText,
+      attachmentList: output.attachmentList,
     };
   },
   fetch_message_by_message_id(input, { userId, accessToken, fetcher }) {
@@ -725,6 +726,8 @@ async function updateDraft(input: Record<string, unknown>, context: ActionContex
 }
 
 async function sendDraft(input: Record<string, unknown>, userId: string, accessToken: string, fetcher: typeof fetch) {
+  const draft = await getDraftResource(userId, normalizeMessageId(input.draftId), accessToken, fetcher, "raw");
+  if (!draft.message.raw) throw new ProviderRequestError(502, "Gmail returned a draft without its complete message.");
   const payload = await fetchJson<{ id: string; threadId?: string }>(
     gmailUserUrl(userId, "drafts", "send"),
     accessToken,
@@ -733,6 +736,7 @@ async function sendDraft(input: Record<string, unknown>, userId: string, accessT
       method: "POST",
       body: JSON.stringify({
         id: normalizeMessageId(input.draftId),
+        message: { raw: draft.message.raw, threadId: draft.message.threadId },
       }),
     },
   );

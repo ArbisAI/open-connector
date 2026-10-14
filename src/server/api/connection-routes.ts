@@ -86,6 +86,20 @@ export function createConnectionRoutes({ connections, oauthFlow, saasOAuth }: Co
       });
     return writeRuntimeSuccess(context, request);
   });
+  app.post("/connections/by-id/:appId/google-account", async (context) => {
+    if (!hasAdminBearer(context))
+      return writeRuntimeFailure(context, {
+        status: 403,
+        errorCode: "forbidden",
+        message: "An administrator bearer is required.",
+      });
+    const body = await readJsonBody(context);
+    if ((body.service !== "gmail" && body.service !== "googlecalendar") || typeof body.email !== "string")
+      throw new HttpRequestError("invalid_input", "A service and expected email are required.");
+    const { materializeGoogleAccount } = await import("../../oauth/google-workspace.ts");
+    const child = await materializeGoogleAccount(connections, context.req.param("appId"), body.service, body.email);
+    return writeRuntimeSuccess(context, child ? serializeManagedConnection(child) : null);
+  });
   for (const reconnect of [false, true]) {
     const path = reconnect ? "/connections/by-id/:appId/connect" : "/connections/:service/connect";
     app.post(path, async (context) => {
