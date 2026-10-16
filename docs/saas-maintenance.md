@@ -195,3 +195,8 @@ counts, local records and Marketplace configuration before testing:
 
 SQLite-backed D1 tests demonstrate the SQL and batch logic, not deployment support or the
 Cloudflare platform's actual rollback limits. Record those real-environment results separately.
+
+
+## Coordinating a restore with a calling application
+
+An application can keep connection IDs outside this service. Before cleanup or reset, distinguish restoring the same deployment from creating an independent clone. Preserve the calling application's references and the connector database at a compatible checkpoint for a same-deployment restore. Reconcile missing/disconnected accounts through normal inspection/reauthorization; never use a clone's cleanup credentials to delete the source deployment's live accounts. See [restoring referenced connections](credentials.md#restoring-connections-with-application-references).
