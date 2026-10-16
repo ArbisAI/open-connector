@@ -3,6 +3,7 @@ import type { ConnectionService } from "../../connection-service.ts";
 import { Hono } from "hono";
 import { timingSafeEqual } from "node:crypto";
 import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { providerFetch } from "../../providers/provider-runtime.ts";
 import { readJsonBody } from "./http-utils.ts";
 import { writeRuntimeFailure, writeRuntimeSuccess } from "./runtime-api.ts";
 
@@ -12,7 +13,10 @@ interface PhoneVerificationOptions {
 }
 
 /** Service-only Verify calls. No catalog discovery, action logs, or raw provider errors. */
-export function createPhoneVerificationRoutes({ connections, fetcher = fetch }: PhoneVerificationOptions): Hono {
+export function createPhoneVerificationRoutes({
+  connections,
+  fetcher = providerFetch,
+}: PhoneVerificationOptions): Hono {
   const app = new Hono();
   app.use("*", async (context, next) => {
     context.header("Cache-Control", "no-store");
