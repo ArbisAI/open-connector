@@ -53,6 +53,14 @@ describe("Google Calendar provider definition", () => {
     for (const scope of expectedOptionalScopes) expect(oauth.scopes).not.toContain(scope);
   });
 
+  it("declares only the narrow scope for free-busy actions", () => {
+    for (const name of ["free_busy_query", "find_free_slots"]) {
+      const action = provider.actions.find((item) => item.name === name);
+      expect(action?.requiredScopes).toEqual([eventsFreeBusy]);
+      expect(action?.requiredScopes).not.toContain("https://www.googleapis.com/auth/calendar.readonly");
+    }
+  });
+
   it("asks the declared scopes alone when a client config names none", () => {
     const service = configService();
     const config = service.normalizeConfig("googlecalendar", { clientId: "client-id", clientSecret: "client-secret" });

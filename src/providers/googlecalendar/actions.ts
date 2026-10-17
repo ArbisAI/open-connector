@@ -7,6 +7,7 @@ import {
   googlecalendarAclWriteScopes,
   googlecalendarCalendarsWriteScopes,
   googlecalendarEventsWriteScopes,
+  googlecalendarFreeBusyScopes,
   googlecalendarReadScopes,
   googlecalendarSettingsReadScopes,
 } from "./scopes.ts";
@@ -518,7 +519,7 @@ const actions: GooglecalendarActionSource[] = [
     "free_busy_query",
     "read",
     "Query busy intervals for calendars and groups.",
-    googlecalendarReadScopes,
+    googlecalendarFreeBusyScopes,
     freeBusyInput(),
     freeBusyOutput(),
   ),
@@ -526,7 +527,7 @@ const actions: GooglecalendarActionSource[] = [
     "find_free_slots",
     "read",
     "Derive free slots from Google Calendar freeBusy data.",
-    googlecalendarReadScopes,
+    googlecalendarFreeBusyScopes,
     freeBusyInput(),
     s.object(
       {

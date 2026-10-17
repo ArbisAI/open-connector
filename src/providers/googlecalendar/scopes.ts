@@ -30,7 +30,9 @@ export const googlecalendarOAuthScopes: string[] = [
 
 const googleCalendarScope = "https://www.googleapis.com/auth/calendar";
 const googleCalendarCalendarListReadonlyScope = "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
-const googleCalendarEventsFreeBusyScope = "https://www.googleapis.com/auth/calendar.events.freebusy";
+export const googleCalendarEventsFreeBusyScope = "https://www.googleapis.com/auth/calendar.events.freebusy";
+
+export const googlecalendarFreeBusyScopes: string[] = [googleCalendarEventsFreeBusyScope];
 
 /**
  * Scopes a client config may request beyond {@link googlecalendarOAuthScopes}; none joins a consent
