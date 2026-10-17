@@ -41,7 +41,7 @@ export function companyAuthorizationMiddleware(): MiddlewareHandler {
  * HTTPS, or loopback HTTP for a local authority. One allowlist for startup and every check.
  * `http://localhost` without a port or path is accepted; the previous pattern required `:` or `/`.
  */
-export function companyAuthorizationEndpoint(value = process.env.COMPANY_AUTHORIZATION_URL || ""): URL | undefined {
+export function companyAuthorizationEndpoint(value: string = process.env.COMPANY_AUTHORIZATION_URL || ""): URL | undefined {
   let url: URL;
   try {
     url = new URL(value);
