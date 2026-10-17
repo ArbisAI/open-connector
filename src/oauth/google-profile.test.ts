@@ -34,4 +34,24 @@ describe("Google ownership evidence", () => {
       "verified Google email",
     );
   });
+  it("proves a mailbox-only token through Gmail and does not keep an unverified subject", async () => {
+    const mailbox = {
+      ...credential,
+      metadata: { scope: "https://www.googleapis.com/auth/gmail.readonly" },
+    };
+    const calls: string[] = [];
+    const profile = await googleProfile(mailbox, {
+      fetcher: async (input) => {
+        calls.push(String(input));
+        if (String(input).includes("gmail.googleapis.com")) {
+          return Response.json({ emailAddress: "Employee@Acme.test" });
+        }
+        return new Response(null, { status: 401 });
+      },
+    });
+    expect(profile).toMatchObject({ accountId: "employee@acme.test", displayName: "Employee@Acme.test" });
+    expect(profile.googleSubject).toBeUndefined();
+    expect(profile.emailVerified).toBeUndefined();
+    expect(calls[0]).toBe("https://gmail.googleapis.com/gmail/v1/users/me/profile");
+  });
 });

@@ -12,7 +12,7 @@ import type { IRunLogStore, RunLog, RunLogCaller, RunLogListInput, RunLogPage } 
 import { ConnectionError } from "../../connection-service.ts";
 import { executeAction as executeProviderAction } from "../../core/execution.ts";
 import { withProviderHttpDispatch } from "../../core/provider-http-dispatch.ts";
-import { approvalInputHash, supportsPreparedAction } from "../../providers/approval.ts";
+import { approvalInputHash, isCurrentPreparedApproval, supportsPreparedAction } from "../../providers/approval.ts";
 import {
   ProviderDispatchRequestError,
   toProviderExecutionError,
@@ -20,7 +20,7 @@ import {
 } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
 import { buildActionPreview, resolvePreviewFolders } from "./action-preview.ts";
-import { companyDispatchOptions } from "./company-authorization.ts";
+import { authorizeCompanyExecution, companyDispatchOptions } from "./company-authorization.ts";
 import { safeRunLogError, summarizeForRunLog } from "./run-log-summary.ts";
 
 export interface ActionRunnerOptions {
@@ -189,11 +189,19 @@ export class ActionRunner {
             },
           };
         } else {
-          connection = await this.options.connections.resolveForExecution(
-            action.service,
-            input.connectionName,
-            input.connectionId,
-          );
+          const blocked = await this.companyOrApprovalBlock(action, input, summary?.id);
+          if (blocked) {
+            failureStatus = blocked.failureStatus;
+            retryAfter = blocked.retryAfter;
+            result = blocked.result;
+          } else
+            connection = await this.options.connections.resolveForExecution(
+              action.service,
+              input.connectionName,
+              input.connectionId,
+            );
+        }
+        if (connection) {
           input.signal?.throwIfAborted();
           const targetPolicy =
             connection.summary?.authType === "no_auth"
@@ -203,6 +211,15 @@ export class ActionRunner {
             policy = targetPolicy;
             throw new ConnectionError(targetPolicy.code, targetPolicy.message);
           }
+          const resolvedBlock = await this.companyOrApprovalBlock(action, input, connection.summary?.id, true);
+          if (resolvedBlock) {
+            connection = undefined;
+            failureStatus = resolvedBlock.failureStatus;
+            retryAfter = resolvedBlock.retryAfter;
+            result = resolvedBlock.result;
+          }
+        }
+        if (connection) {
           const executor =
             action.execution.locallyExecutable && connection.kind === "local"
               ? await this.options.providerLoader.loadActionExecutor(
@@ -214,36 +231,6 @@ export class ActionRunner {
           input.signal?.throwIfAborted();
           const saasReference = connection.kind === "saas" ? connection.reference : undefined;
           const resolvedConnection = connection;
-          if (
-            input.prepared &&
-            (input.prepared.version !== 1 ||
-              input.prepared.actionId !== action.id ||
-              input.prepared.connectionId !== connection.summary?.id ||
-              input.prepared.inputHash !== approvalInputHash(input.input))
-          ) {
-            return {
-              executionId,
-              auditPersisted: false,
-              result: {
-                ok: false,
-                error: {
-                  code: "approval_expired",
-                  message: "The saved approval no longer matches this action.",
-                  details: { outcome: "not_executed" },
-                },
-              },
-            };
-          }
-          if (
-            process.env.COMPANY_ONBOARDING_ENABLED === "true" &&
-            !input.prepare &&
-            action.operationType !== "read" &&
-            (!input.prepared?.createdAt ||
-              Date.now() - input.prepared.createdAt > 600000 ||
-              input.prepared.createdAt > Date.now())
-          ) {
-            throw new ConnectionError("invalid_input", "A current approval is required for this write.");
-          }
           result = await withProviderHttpDispatchResult(
             {
               operation: "action",
@@ -404,6 +391,69 @@ export class ActionRunner {
 
   getRun(id: string): Promise<RunLog | undefined> {
     return this.options.runs.get(id);
+  }
+
+  private async companyOrApprovalBlock(
+    action: { id: string; service: string },
+    input: RunActionInput,
+    connectionId: string | undefined,
+    matchPrepared = false,
+  ): Promise<{ result: ExecutionResult; failureStatus?: 503; retryAfter?: string } | undefined> {
+    const company = await authorizeCompanyExecution({
+      operation: "action",
+      service: action.service,
+      connectionId,
+      actionId: action.id,
+      signal: input.signal,
+    });
+    if (!company.ok) {
+      return {
+        failureStatus: company.reason === "unavailable" ? 503 : undefined,
+        retryAfter: company.reason === "unavailable" ? String(company.retryAfterSeconds) : undefined,
+        result: {
+          ok: false,
+          error: {
+            code: company.reason === "unavailable" ? "rate_limited" : "forbidden",
+            message:
+              company.reason === "unavailable"
+                ? "Company authorization is temporarily unavailable."
+                : "Current company access is required.",
+          },
+        },
+      };
+    }
+    if (!input.prepare && supportsPreparedAction(action.id) && !isCurrentPreparedApproval(input.prepared)) {
+      return {
+        result: {
+          ok: false,
+          error: {
+            code: "approval_expired",
+            message: "A current approval is required for this write.",
+            details: { outcome: "not_executed" },
+          },
+        },
+      };
+    }
+    if (
+      matchPrepared &&
+      input.prepared &&
+      (input.prepared.version !== 1 ||
+        input.prepared.actionId !== action.id ||
+        input.prepared.connectionId !== connectionId ||
+        input.prepared.inputHash !== approvalInputHash(input.input))
+    ) {
+      return {
+        result: {
+          ok: false,
+          error: {
+            code: "approval_expired",
+            message: "The saved approval no longer matches this action.",
+            details: { outcome: "not_executed" },
+          },
+        },
+      };
+    }
+    return undefined;
   }
 
   private createExecutionContext(

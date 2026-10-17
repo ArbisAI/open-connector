@@ -450,7 +450,19 @@ export class ConnectionService {
     connectionNameInput?: string,
     signal?: AbortSignal,
   ): Promise<ConnectionSummary> {
-    const storedCredential = await this.prepareOAuthCredential(service, credential, signal);
+    return this.savePreparedOAuthCredential(
+      service,
+      await this.prepareOAuthCredential(service, credential, signal),
+      connectionNameInput,
+    );
+  }
+
+  /** Persist a credential this service already validated. Callers must not pass an unvalidated parent grant. */
+  async savePreparedOAuthCredential(
+    service: string,
+    storedCredential: OAuthCredential,
+    connectionNameInput?: string,
+  ): Promise<ConnectionSummary> {
     const connectionName = normalizeConnectionName(connectionNameInput);
     const stored = await this.store.set(service, connectionName, storedCredential);
     return this.createStoredConnectionSummary(
@@ -587,15 +599,15 @@ export class ConnectionService {
   /** Company access has already been denied by the authority. Keep failed revocations retryable. */
   async disconnectForCompany(appId: string, revoke: boolean): Promise<void> {
     const stored = await this.getStoredConnection(appId);
-    if (revoke) {
-      const outcome = await this.revokeDeletedCredential(stored.service, stored.connectionName, stored);
-      if (outcome === "failed")
-        throw new ConnectionError(
-          "oauth_token_revocation_failed",
-          "Provider revocation could not be confirmed. Retry cleanup.",
-        );
-    }
+    // Delete first. A store that refuses an active Trigger subscription must leave the grant intact.
     await this.store.delete(stored.service, stored.connectionName);
+    if (!revoke) return;
+    const outcome = await this.revokeDeletedCredential(stored.service, stored.connectionName, stored);
+    if (outcome === "failed")
+      throw new ConnectionError(
+        "oauth_token_revocation_failed",
+        "Provider revocation could not be confirmed. Retry cleanup.",
+      );
   }
 
   async disconnect(
@@ -1035,9 +1047,7 @@ export class ConnectionService {
       accountId,
       displayName,
       grantedScopes: normalizeGrantedScopes(grantedScopes),
-      googleSubject: validation.profile?.googleSubject ?? previous?.profile.googleSubject,
-      hostedDomain: validation.profile?.hostedDomain ?? previous?.profile.hostedDomain,
-      emailVerified: validation.profile?.emailVerified ?? previous?.profile.emailVerified,
+      ...verifiedGoogleIdentity(validation, previous),
     };
   }
 
@@ -1113,6 +1123,28 @@ export class ConnectionError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+/**
+ * Keep a previous Google identity only when this validation verified the same account.
+ * An omitted or false emailVerified must not restore an older true.
+ */
+function verifiedGoogleIdentity(
+  validation: CredentialValidationResult,
+  previous?: PreviousCredentialRuntimeData,
+): Pick<CredentialProfile, "googleSubject" | "hostedDomain" | "emailVerified"> {
+  const profile = validation.profile;
+  if (profile?.emailVerified !== true || !profile.googleSubject) return {};
+  const sameAccount =
+    !previous?.profile.accountId ||
+    !profile.accountId ||
+    previous.profile.accountId.toLowerCase() === profile.accountId.toLowerCase();
+  if (!sameAccount) return {};
+  return {
+    googleSubject: profile.googleSubject,
+    hostedDomain: profile.hostedDomain,
+    emailVerified: true,
+  };
 }
 
 function describeError(error: unknown): string {

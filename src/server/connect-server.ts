@@ -51,7 +51,7 @@ import {
   readIdempotencyKey,
 } from "./actions/action-idempotency.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
-import { companyAuthorizationMiddleware, authorizeCompanyAction } from "./actions/company-authorization.ts";
+import { companyAuthorizationMiddleware } from "./actions/company-authorization.ts";
 import { renderActionMarkdown } from "./api/action-markdown.ts";
 import { clearLocalAuthCookie, createLocalAuthMiddleware, readLocalAuthSession, readRuntimeGrant } from "./api/auth.ts";
 import { getResponseCachePolicy } from "./api/cache-policy.ts";
@@ -811,19 +811,6 @@ export class ConnectServer {
   private async prepareRuntimeAction(context: Context, actionId: string): Promise<Response> {
     if (!this.options.catalog.actionsById.has(actionId))
       return writeRuntimeFailure(context, unknownActionFailure(actionId));
-    if (
-      !(await authorizeCompanyAction(
-        actionId,
-        optionalString(context.req.header("x-oo-connector-app-id")),
-        context.req.raw.signal,
-      ))
-    ) {
-      return writeRuntimeFailure(context, {
-        status: 403,
-        errorCode: "forbidden",
-        message: "Current company access is required.",
-      });
-    }
     const body = await readJsonBody(context);
     const policy = await this.getPolicySnapshot(context);
     const run = await this.options.actions.prepare({
@@ -859,13 +846,6 @@ export class ConnectServer {
     }
     const connectionName = readConnectionName(context, body);
     const connectionId = optionalString(context.req.header("x-oo-connector-app-id"));
-    if (!(await authorizeCompanyAction(actionId, connectionId, context.req.raw.signal))) {
-      return writeRuntimeFailure(context, {
-        status: 403,
-        errorCode: "forbidden",
-        message: "Current company access is required.",
-      });
-    }
     const runtimeGrant = readRuntimeGrant(context);
     let policy: ActionPolicySnapshot;
     try {
