@@ -159,7 +159,10 @@ export class ActionRunner {
     const startedAt = new Date(startedAtMs).toISOString();
     let policy: ActionPolicyDecision = input.policy.evaluate(action);
     let connection: ExecutionConnection | undefined;
-    let result: ExecutionResult;
+    let result: ExecutionResult = {
+      ok: false,
+      error: { code: "internal_error", message: "Action execution did not produce a result." },
+    };
     let remoteExecutionId: string | undefined;
     let failureStatus: SaasError["status"] | undefined;
     let retryAfter: string | undefined;
