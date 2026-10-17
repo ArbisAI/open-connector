@@ -361,12 +361,20 @@ export function serializeManagedConnection(connection: ManagedConnectionSummary)
   status: ManagedConnectionSummary["status"];
   providerAccountId: string;
   comment: string | null;
+  googleSubject?: string;
+  hostedDomain?: string;
+  emailVerified?: boolean;
+  grantedScopes: string[];
 } {
   return {
     ...serializeRuntimeConnectedApp(connection),
     status: connection.status,
     providerAccountId: connection.profile.accountId,
     comment: connection.comment,
+    googleSubject: connection.profile.googleSubject,
+    hostedDomain: connection.profile.hostedDomain,
+    emailVerified: connection.profile.emailVerified,
+    grantedScopes: connection.profile.grantedScopes,
   };
 }
 

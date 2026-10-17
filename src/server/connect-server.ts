@@ -51,6 +51,7 @@ import {
   readIdempotencyKey,
 } from "./actions/action-idempotency.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
+import { companyAuthorizationMiddleware } from "./actions/company-authorization.ts";
 import { renderActionMarkdown } from "./api/action-markdown.ts";
 import { clearLocalAuthCookie, createLocalAuthMiddleware, readLocalAuthSession, readRuntimeGrant } from "./api/auth.ts";
 import { getResponseCachePolicy } from "./api/cache-policy.ts";
@@ -212,6 +213,7 @@ export class ConnectServer {
       app.use("/api/*", compress());
     }
     app.use("*", createLocalAuthMiddleware(auth));
+    app.use("*", companyAuthorizationMiddleware());
     if (this.options.marketplace) {
       app.get("/api/marketplace", (context) => context.json(this.options.marketplace!.getState()));
       app.get("/api/marketplace/discovery", (context) => this.getMarketplaceDiscovery(context));

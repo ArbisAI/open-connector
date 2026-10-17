@@ -428,3 +428,12 @@ npm run dev
 Action policy entries are comma-separated action ids. A provider-wide wildcard such as `gmail.*`
 matches all actions for that provider, and a bare `*` matches every action. Proxy policy entries are
 comma-separated provider service names, or `*` for all provider proxies.
+
+
+## Restoring connections with application references
+
+Applications may retain an opaque connection ID in a separate database. Preserve the connection record, encrypted credential value, required encryption configuration and referenced ID together when restoring the same deployment. Restoring only the application's reference does not restore credentials or consent. A database copy with sanitized/disabled credential placeholders cannot execute provider actions.
+
+Keep disconnected, replacing and reauthorization-required states explicit in the calling application. Do not recreate accounts under a guessed alias or select a different shared account merely because a referenced connection is missing. After restore, inspect the exact connection and use the normal authorization/reconnect flow where required. Do not publish encrypted credential dumps or encryption keys as migration evidence.
+
+For an independent deployment copied from another instance, follow [SaaS instance maintenance](saas-maintenance.md) rather than invoking online cleanup against the original instance's accounts. For account inspection/reconnection semantics, see [programmatic connections](programmatic-connections.md).

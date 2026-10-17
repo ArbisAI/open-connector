@@ -12,6 +12,7 @@ import {
   pickOptionalString,
   requiredRecord,
 } from "../../core/cast.ts";
+import { googleProfile } from "../../oauth/google-profile.ts";
 import {
   defineGoogleProviderExecutors,
   googleBearerProxyAuth,
@@ -176,26 +177,8 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
 });
 
 export const credentialValidators: CredentialValidators = {
-  async oauth2(input, { fetcher, signal }) {
-    const profile = await googlecalendarJsonRequest<{
-      email?: string;
-      name?: string;
-      sub?: string;
-    }>("https://www.googleapis.com/oauth2/v3/userinfo", {
-      accessToken: input.accessToken,
-      fetcher,
-      signal,
-    });
-
-    return {
-      profile: {
-        accountId: profile.email ?? profile.sub ?? "googlecalendar:oauth2",
-        displayName: profile.name ?? profile.email ?? "Google Calendar User",
-      },
-      metadata: {
-        currentAccount: profile,
-      },
-    };
+  async oauth2(input, options) {
+    return { profile: await googleProfile(input, options) };
   },
   customCredential: googleServiceAccountValidator("googlecalendar", googlecalendarOAuthScopes),
 };
