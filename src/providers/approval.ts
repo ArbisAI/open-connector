@@ -139,7 +139,7 @@ export function supportsPreparedAction(actionId: string): boolean {
 const approvalMaxAgeMs = 600_000;
 
 /** A caller-supplied approval is current only when this server stamped it inside the window. */
-export function isCurrentPreparedApproval(prepared: PreparedAction | undefined, now = Date.now()): boolean {
+export function isCurrentPreparedApproval(prepared: PreparedAction | undefined, now: number = Date.now()): boolean {
   return (
     typeof prepared?.createdAt === "number" &&
     Number.isSafeInteger(prepared.createdAt) &&
