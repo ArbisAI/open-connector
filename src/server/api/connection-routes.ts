@@ -79,7 +79,7 @@ export function createConnectionRoutes({ connections, oauthFlow, saasOAuth }: Co
         errorCode: "forbidden",
         message: "An administrator bearer is required.",
       });
-    const body = await context.req.json<{ revoke?: boolean }>();
+    const body = await readJsonBody(context);
     await connections.disconnectForCompany(context.req.param("appId"), body.revoke === true);
     return writeRuntimeSuccess(context, null);
   });
