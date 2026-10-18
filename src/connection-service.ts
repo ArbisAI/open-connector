@@ -1126,7 +1126,8 @@ export class ConnectionError extends Error {
 }
 
 /**
- * Keep a previous Google identity only when this validation verified the same account.
+ * Accept fresh verified Google identity, replacing an unverified OAuth placeholder.
+ * A previously verified account must still match this validation.
  * An omitted or false emailVerified must not restore an older true.
  */
 function verifiedGoogleIdentity(
@@ -1136,6 +1137,7 @@ function verifiedGoogleIdentity(
   const profile = validation.profile;
   if (profile?.emailVerified !== true || !profile.googleSubject) return {};
   const sameAccount =
+    previous?.metadata.providerAccountVerified !== true ||
     !previous?.profile.accountId ||
     !profile.accountId ||
     previous.profile.accountId.toLowerCase() === profile.accountId.toLowerCase();
