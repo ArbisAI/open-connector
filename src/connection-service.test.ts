@@ -1331,6 +1331,31 @@ describe("ConnectionService disconnect revocation", () => {
     return body;
   }
 
+  it("cleans both company connections sharing a Google grant without a user retry", async () => {
+    const provider: ProviderDefinition = {
+      ...revocableProvider,
+      auth: [
+        {
+          ...revocableProvider.auth[0],
+          revocationUrl: "https://oauth2.googleapis.com/revoke",
+        } as ProviderDefinition["auth"][number],
+      ],
+    };
+    const { service, store } = await connectRevocable(provider);
+    const first = await store.get(provider.service, "default");
+    if (!first || first.source === "saas") throw new Error("Expected local OAuth connection");
+    const second = await store.set(provider.service, "calendar", first.credential);
+    let calls = 0;
+    stubRevocationResponse(() =>
+      ++calls === 1 ? new Response(null, { status: 200 }) : Response.json({ error: "invalid_token" }, { status: 400 }),
+    );
+    await expect(service.disconnectForCompany(first.id, true)).resolves.toBeUndefined();
+    await expect(service.disconnectForCompany(second.id, true)).resolves.toBeUndefined();
+    expect(calls).toBe(2);
+    expect(await store.get(provider.service, "default")).toBeUndefined();
+    expect(await store.get(provider.service, "calendar")).toBeUndefined();
+  });
+
   it("deletes the connection before posting the refresh token once", async () => {
     const { service, store, logger } = await connectRevocable(revocableProvider);
     const fetcher = stubRevocationResponse(async () => {
