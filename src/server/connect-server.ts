@@ -51,12 +51,14 @@ import {
   readIdempotencyKey,
 } from "./actions/action-idempotency.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
+import { companyAuthorizationMiddleware } from "./actions/company-authorization.ts";
 import { renderActionMarkdown } from "./api/action-markdown.ts";
 import { clearLocalAuthCookie, createLocalAuthMiddleware, readLocalAuthSession, readRuntimeGrant } from "./api/auth.ts";
 import { getResponseCachePolicy } from "./api/cache-policy.ts";
 import { createConnectionRoutes } from "./api/connection-routes.ts";
 import { HttpRequestError, internalError, jsonError, notFound, readJsonBody } from "./api/http-utils.ts";
 import { renderOAuthCompletionPage } from "./api/oauth-completion-page.ts";
+import { createPhoneVerificationRoutes } from "./api/phone-verification-routes.ts";
 import { policyRequestMaxBytes, readRuntimePolicyRules, readTokenPolicy } from "./api/policy-input.ts";
 import { serializeRuntimeTriggerPermissions } from "./api/runtime-api.ts";
 import {
@@ -211,7 +213,13 @@ export class ConnectServer {
       // (e.g. transit file downloads).
       app.use("/api/*", compress());
     }
+    // Dedicated backend credential; codes never enter the action catalog or run log.
+    app.route(
+      "/v1/internal/phone-verification",
+      createPhoneVerificationRoutes({ connections: this.options.connections }),
+    );
     app.use("*", createLocalAuthMiddleware(auth));
+    app.use("*", companyAuthorizationMiddleware());
     if (this.options.marketplace) {
       app.get("/api/marketplace", (context) => context.json(this.options.marketplace!.getState()));
       app.get("/api/marketplace/discovery", (context) => this.getMarketplaceDiscovery(context));

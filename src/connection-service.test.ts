@@ -595,6 +595,41 @@ describe("ConnectionService", () => {
     await expect(service.listConnections()).resolves.toEqual([]);
   });
 
+  it.each([
+    { verifiedBefore: false, verifiedNow: true, subject: "google-subject", accepted: true },
+    { verifiedBefore: true, verifiedNow: true, subject: "google-subject", accepted: false },
+    { verifiedBefore: false, verifiedNow: false, subject: "google-subject", accepted: false },
+    { verifiedBefore: false, verifiedNow: true, subject: undefined, accepted: false },
+  ])(
+    "requires new Google proof without treating an OAuth placeholder as an account (%#)",
+    async ({ verifiedBefore, verifiedNow, subject, accepted }) => {
+      const service = createService([oauthProvider], {
+        providerLoader: new FakeProviderLoader({
+          async oauth2() {
+            return {
+              profile: {
+                ...testProfile,
+                accountId: "person@acme.test",
+                googleSubject: subject,
+                hostedDomain: "acme.test",
+                emailVerified: verifiedNow,
+              },
+            };
+          },
+        }),
+      });
+      const summary = await service.setOAuthCredential("example", {
+        authType: "oauth2",
+        accessToken: "test-token",
+        tokenType: "Bearer",
+        profile: { ...testProfile, accountId: "example:oauth2" },
+        metadata: { providerAccountVerified: verifiedBefore },
+      });
+      expect(summary.profile.googleSubject).toBe(accepted ? "google-subject" : undefined);
+      expect(summary.profile.emailVerified).toBe(accepted ? true : undefined);
+    },
+  );
+
   // Credential metadata also holds client secrets and provider-private data.
   // The summary is a public shape, so this asserts the WHOLE object rather
   // than the one new key: a test that only checks `oauthAuthorizationId` is

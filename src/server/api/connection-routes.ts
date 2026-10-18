@@ -72,6 +72,17 @@ export function createConnectionRoutes({ connections, oauthFlow, saasOAuth }: Co
     await connections.disconnect(connection.service, connection.connectionName);
     return writeRuntimeSuccess(context, null);
   });
+  app.post("/connections/by-id/:appId/company-cleanup", async (context) => {
+    if (!hasAdminBearer(context))
+      return writeRuntimeFailure(context, {
+        status: 403,
+        errorCode: "forbidden",
+        message: "An administrator bearer is required.",
+      });
+    const body = await readJsonBody(context);
+    await connections.disconnectForCompany(context.req.param("appId"), body.revoke === true);
+    return writeRuntimeSuccess(context, null);
+  });
   app.get("/connection-requests/:connectionRequestId", async (context) => {
     const id = context.req.param("connectionRequestId");
     const request =
