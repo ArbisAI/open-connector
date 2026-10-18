@@ -55,6 +55,34 @@ describe("Google combined consent", () => {
       await materializeGoogleAccount(connections as unknown as ConnectionService, "root", "gmail", "me@acme.test"),
     ).toEqual({ id: "child" });
   });
+
+  it("materializes the calendar account from a least-privilege freebusy grant", async () => {
+    const connections = service(["https://www.googleapis.com/auth/calendar.events.freebusy"]);
+    expect(
+      await materializeGoogleAccount(
+        connections as unknown as ConnectionService,
+        "root",
+        "googlecalendar",
+        "me@acme.test",
+      ),
+    ).toEqual({ id: "child" });
+    expect(
+      await materializeGoogleAccount(connections as unknown as ConnectionService, "root", "gmail", "me@acme.test"),
+    ).toBeNull();
+  });
+
+  it("offers the scopes a least-privilege Nexo consent requests", () => {
+    const auth = provider.auth[0];
+    if (auth.type !== "oauth2") throw new Error("oauth");
+    const ids = auth.authorizationOptions?.map((option) => option.id) ?? [];
+    for (const required of [
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.compose",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
+    ]) {
+      expect(ids).toContain(required);
+    }
+  });
   it("rejects the wrong account and unrelated services", async () => {
     const connections = service();
     await expect(

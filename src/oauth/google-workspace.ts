@@ -2,9 +2,20 @@ import type { ConnectionService, ManagedConnectionSummary } from "../connection-
 
 import { ConnectionError } from "../connection-service.ts";
 
-const readScope: Record<string, string> = {
-  gmail: "https://www.googleapis.com/auth/gmail.readonly",
-  googlecalendar: "https://www.googleapis.com/auth/calendar.readonly",
+/**
+ * The scopes that each prove a child service was actually consented to. Any one
+ * of a service's entries is enough: a least-privilege host may authorize
+ * `calendar.events.freebusy` for availability lookups instead of the sensitive
+ * `calendar.readonly`, and that grant must still materialize the calendar
+ * account. A scope listed here only decides whether the child connection is
+ * created — each action still declares and enforces its own required scopes.
+ */
+const readScopes: Record<string, string[]> = {
+  gmail: ["https://www.googleapis.com/auth/gmail.readonly"],
+  googlecalendar: [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events.freebusy",
+  ],
 };
 
 /** Materialize an idempotent child account without returning OAuth secrets. Admin API only. */
@@ -14,8 +25,8 @@ export async function materializeGoogleAccount(
   service: string,
   email: string,
 ): Promise<ManagedConnectionSummary | null> {
-  const required = readScope[service];
-  if (!required) throw new ConnectionError("invalid_input", "Only email and calendar are supported.");
+  const accepted = readScopes[service];
+  if (!accepted) throw new ConnectionError("invalid_input", "Only email and calendar are supported.");
   const root = await connections.getStoredConnection(rootId);
   if (
     root.service !== "googleworkspace" ||
@@ -24,7 +35,8 @@ export async function materializeGoogleAccount(
   ) {
     throw new ConnectionError("invalid_input", "The Google account does not match the signed-in account.");
   }
-  if (!root.credential.profile.grantedScopes.includes(required)) return null;
+  const granted = root.credential.profile.grantedScopes;
+  if (!accepted.some((scope) => granted.includes(scope))) return null;
   if (!root.credential.profile.googleSubject || root.credential.profile.emailVerified !== true) {
     throw new ConnectionError("invalid_input", "The Google account identity has not been verified.");
   }

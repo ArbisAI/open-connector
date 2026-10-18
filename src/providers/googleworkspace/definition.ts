@@ -1,14 +1,96 @@
-import type { ProviderDefinition } from "../../core/types.ts";
+import type { OAuthAuthorizationOption, ProviderDefinition } from "../../core/types.ts";
 
-export const workspaceScopes: string[] = [
-  "openid",
-  "email",
-  "profile",
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/calendar.readonly",
-  "https://www.googleapis.com/auth/gmail.send",
-  "https://www.googleapis.com/auth/calendar.events",
+const optionalPermission = "Optional Google permission. You can decline access and continue.";
+
+/**
+ * The consent menu, declared option by option rather than derived from array
+ * position. A caller names the scopes it wants in `authorizationOptionIds`, and
+ * `startConnectionRequest` rejects any id missing from this list outright, so a
+ * scope a host needs but this table omits fails the connect call rather than
+ * quietly degrading to a narrower grant.
+ *
+ * `risk` follows Google's own classification: `calendar.events.freebusy` is a
+ * non-sensitive scope, unlike the sensitive `calendar.readonly` it replaces for
+ * availability lookups. `defaultSelected` is consent-chooser metadata only and
+ * never widens a request that names its scopes explicitly; a newly added option
+ * stays unselected so it cannot extend an existing host's consent screen.
+ */
+const workspaceScopeOptions: OAuthAuthorizationOption[] = [
+  {
+    id: "openid",
+    label: "Identity",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: true,
+    risk: "standard",
+  },
+  {
+    id: "email",
+    label: "Email address",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: true,
+    risk: "standard",
+  },
+  {
+    id: "profile",
+    label: "Profile",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: true,
+    risk: "standard",
+  },
+  {
+    id: "https://www.googleapis.com/auth/gmail.readonly",
+    label: "Read email",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: true,
+    risk: "sensitive",
+  },
+  {
+    id: "https://www.googleapis.com/auth/calendar.readonly",
+    label: "Read calendars",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: true,
+    risk: "sensitive",
+  },
+  {
+    id: "https://www.googleapis.com/auth/gmail.send",
+    label: "Send email",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: false,
+    risk: "sensitive",
+  },
+  {
+    id: "https://www.googleapis.com/auth/calendar.events",
+    label: "Edit events",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: false,
+    risk: "sensitive",
+  },
+  {
+    id: "https://www.googleapis.com/auth/gmail.compose",
+    label: "Create email drafts",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: false,
+    risk: "sensitive",
+  },
+  {
+    id: "https://www.googleapis.com/auth/calendar.events.freebusy",
+    label: "Check calendar availability",
+    description: optionalPermission,
+    required: false,
+    defaultSelected: false,
+    risk: "standard",
+  },
 ];
+
+export const workspaceScopes: string[] = workspaceScopeOptions.map((option) => option.id);
 
 /** Consent broker only. Actions use the separately owned Gmail/Calendar connections. */
 export const provider: ProviderDefinition = {
@@ -25,16 +107,7 @@ export const provider: ProviderDefinition = {
       tokenEndpointAuthMethod: "client_secret_post",
       scopes: workspaceScopes,
       authorizationParams: { access_type: "offline", prompt: "consent" },
-      authorizationOptions: workspaceScopes.map((id, i) => ({
-        id,
-        label: ["Identity", "Email address", "Profile", "Read email", "Read calendars", "Send email", "Edit events"][
-          i
-        ]!,
-        description: "Optional Google permission. You can decline access and continue.",
-        required: false,
-        defaultSelected: i < 5,
-        risk: i < 3 ? "standard" : "sensitive",
-      })),
+      authorizationOptions: workspaceScopeOptions,
     },
   ],
   actions: [],
