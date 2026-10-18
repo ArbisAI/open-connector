@@ -462,6 +462,32 @@ describe("OAuth token revocation", () => {
     expect(message).not.toContain("expired");
   });
 
+  it("completes shared Google grant cleanup on the first attempt", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(Response.json({ error: "invalid_token" }, { status: 400 }));
+    vi.stubGlobal("fetch", fetcher);
+    const request = { ...revocationRequest, revocationUrl: "https://oauth2.googleapis.com/revoke" };
+    await expect(requestTokenRevocation(request)).resolves.toBeUndefined();
+    await expect(requestTokenRevocation(request)).resolves.toBeUndefined();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [400, "invalid_client"],
+    [403, "invalid_token"],
+    [500, "invalid_token"],
+  ])("does not hide genuine Google revocation errors: %s %s", async (status, error) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ error }, { status })),
+    );
+    await expect(
+      requestTokenRevocation({ ...revocationRequest, revocationUrl: "https://oauth2.googleapis.com/revoke" }),
+    ).rejects.toThrow("OAuth token revocation failed");
+  });
+
   it("reports a non-JSON refusal by status alone", async () => {
     vi.stubGlobal(
       "fetch",
