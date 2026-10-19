@@ -40,6 +40,17 @@ describe("Google combined consent", () => {
       "https://www.googleapis.com/auth/gmail.send",
     );
   });
+  it("offers Gmail draft permission in combined consent", () => {
+    const auth = provider.auth[0];
+    if (auth.type !== "oauth2") throw new Error("oauth");
+    expect(auth.scopes).toContain("https://www.googleapis.com/auth/gmail.compose");
+    expect(auth.authorizationOptions).toContainEqual(
+      expect.objectContaining({
+        id: "https://www.googleapis.com/auth/gmail.compose",
+        label: "Manage drafts and send email",
+      }),
+    );
+  });
   it("materializes only explicitly granted services", async () => {
     const connections = service();
     expect(

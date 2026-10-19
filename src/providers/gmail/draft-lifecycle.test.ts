@@ -88,8 +88,11 @@ function fixture(initialRaw?: string) {
       });
     }
     if (url.pathname.endsWith("/drafts/send")) {
-      expect(body).toEqual({ id: "draft-1" });
-      sent.push(raw);
+      expect(body).toEqual({
+        id: "draft-1",
+        message: JSON.parse(JSON.stringify({ raw, threadId: responseIds.threadId ? storedThreadId : undefined })),
+      });
+      sent.push(body.message.raw);
       return Response.json({ id: "sent-1", threadId: responseIds.threadId ? storedThreadId : undefined });
     }
     if (!url.pathname.endsWith("/drafts") && !url.pathname.endsWith("/drafts/draft-1")) {
@@ -768,7 +771,7 @@ describe("Gmail action ID contracts", () => {
   });
 
   it("keeps the nullable thread ID contract when Gmail omits it from send_draft", async () => {
-    const test = fixture();
+    const test = fixture(encodeMimeMessage({ to: ["reader@example.com"], subject: "Draft", body: "Draft body" }));
     test.responseIds.threadId = false;
     const output = await gmailActionHandlers.send_draft({ draftId: "draft-1" }, test.context);
     expect(output).toEqual({ messageId: "sent-1", threadId: null });
