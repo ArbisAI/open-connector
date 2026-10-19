@@ -50,6 +50,16 @@ describe("Gmail provider definition", () => {
     },
   );
 
+  it("offers send and compose as explicit choices without selecting them by default", () => {
+    const oauth = provider.auth.find((auth) => auth.type === "oauth2");
+    for (const id of [gmailSendScope, gmailComposeScope]) {
+      expect(oauth?.authorizationOptions?.find((option) => option.id === id)).toMatchObject({
+        required: false,
+        defaultSelected: false,
+      });
+    }
+  });
+
   it("does not request optional scopes when no grant is specified", () => {
     const service = configService();
     const config = service.normalizeConfig("gmail", { clientId: "client-id", clientSecret: "client-secret" });

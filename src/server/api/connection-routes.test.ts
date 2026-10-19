@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../../catalog-store.ts";
 import { requestAuthorizationCodeToken } from "../../oauth/oauth-token.ts";
 import { provider as githubProvider } from "../../providers/github/definition.ts";
+import { provider as gmailProvider } from "../../providers/gmail/definition.ts";
 import { provider as googleWorkspaceProvider } from "../../providers/googleworkspace/definition.ts";
 import { credentialValidators as googleWorkspaceValidators } from "../../providers/googleworkspace/executors.ts";
 import { ProviderLoader } from "../../providers/provider-loader.ts";
@@ -550,4 +551,28 @@ it("connects Slack using granted scopes from the nested user token response", as
   const connection = (await (await call(`/v1/connections/by-id/${result.appId}`)).json()).data;
   expect(connection.scopes).toEqual(["channels:read", "users:read"]);
   expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  [
+    "read, draft and send",
+    [
+      "openid",
+      "email",
+      "profile",
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.compose",
+    ],
+  ],
+  ["read only", ["openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"]],
+])("starts Gmail OAuth with the requested %s permissions", async (_label, authorizationOptionIds) => {
+  const { call } = await setup(undefined, {}, { ...gmailProvider, service: "example", actions: [], triggers: [] });
+  const response = await call("/v1/connections/example/connect", { authorizationOptionIds });
+  const payload = await response.json();
+  expect(response.status, JSON.stringify(payload)).toBe(200);
+  const url = new URL(payload.data.authorizationUrl);
+  const scopes = url.searchParams.get("scope")!.split(" ");
+  expect(scopes.sort()).toEqual([...authorizationOptionIds].sort());
+  expect(scopes).not.toContain("https://www.googleapis.com/auth/gmail.modify");
 });
