@@ -44,6 +44,23 @@ describe("OAuthCredentialRefreshService", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ["invalid_grant", 400, "oauth_reauth_required"],
+    ["invalid_client", 401, "oauth_token_refresh_failed"],
+    ["invalid_grant", 503, "oauth_token_refresh_failed"],
+    ["temporarily_unavailable", 503, "oauth_token_refresh_failed"],
+  ])("classifies %s without guessing from the provider message", async (code, status, expected) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ error: code, error_description: "Token has been expired or revoked." }, { status }),
+      ),
+    );
+    await expect(
+      new OAuthCredentialRefreshService(clientConfigs).refresh("example", expiredCredential({ expires_in: 3600 })),
+    ).rejects.toMatchObject({ code: expected });
+  });
+
   // A refresh rotates tokens INSIDE an existing authorization — it is not a
   // new consent — so the provenance has to survive it.
   //

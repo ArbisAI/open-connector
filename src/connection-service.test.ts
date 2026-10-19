@@ -821,6 +821,84 @@ describe("ConnectionService", () => {
     );
   });
 
+  it.each([true, false])("only persists permanent renewal rejection (permanent=%s)", async (permanent) => {
+    const store = new MemoryConnectionStore();
+    const configs = createOAuthClientConfigs([oauthProvider]);
+    await configs.upsertConfig({ service: "example", clientId: "client-id", clientSecret: "client-secret" });
+    const service = createService([oauthProvider], {
+      store,
+      oauthCredentials: new OAuthCredentialRefreshService(configs),
+    });
+    const saved = await store.set("example", "default", {
+      authType: "oauth2",
+      accessToken: "expired",
+      tokenType: "Bearer",
+      refreshToken: "refresh",
+      expiresAt: "2026-01-01T00:00:00Z",
+      profile: testProfile,
+      metadata: {},
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: permanent ? "invalid_grant" : "temporarily_unavailable" },
+          { status: permanent ? 400 : 503 },
+        ),
+      ),
+    );
+    const code = permanent ? "oauth_reauth_required" : "oauth_token_refresh_failed";
+    await expect(service.getCredential("example")).rejects.toMatchObject({ code });
+    expect((await service.getManagedConnection(saved.id)).status).toBe(permanent ? "reauth_required" : "active");
+    await expect(service.getCredential("example")).rejects.toMatchObject({ code });
+    expect(fetch).toHaveBeenCalledTimes(permanent ? 1 : 2);
+  });
+
+  it("does not mark a replacement credential invalid when an older refresh fails", async () => {
+    const store = new MemoryConnectionStore();
+    const configs = createOAuthClientConfigs([oauthProvider]);
+    await configs.upsertConfig({ service: "example", clientId: "client-id", clientSecret: "client-secret" });
+    const service = createService([oauthProvider], {
+      store,
+      oauthCredentials: new OAuthCredentialRefreshService(configs),
+    });
+    const expired = {
+      authType: "oauth2" as const,
+      accessToken: "expired",
+      tokenType: "Bearer",
+      refreshToken: "refresh",
+      expiresAt: "2026-01-01T00:00:00Z",
+      profile: testProfile,
+      metadata: {},
+    };
+    await store.set("example", "default", expired);
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let complete!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        started();
+        return new Promise<Response>((resolve) => {
+          complete = resolve;
+        });
+      }),
+    );
+    const execution = service.getCredential("example");
+    await pending;
+    const replacement = await store.set("example", "default", {
+      ...expired,
+      accessToken: "replacement",
+      expiresAt: "2099-01-01T00:00:00Z",
+    });
+    complete(Response.json({ error: "invalid_grant" }, { status: 400 }));
+    await expect(execution).rejects.toMatchObject({ code: "connection_changed" });
+    expect((await service.getManagedConnection(replacement.id)).status).toBe("active");
+    await expect(service.getCredential("example")).resolves.toMatchObject({ accessToken: "replacement" });
+  });
+
   it("shares an in-flight OAuth refresh across concurrent requests", async () => {
     const store = new MemoryConnectionStore();
     const oauthClientConfigs = createOAuthClientConfigs([oauthProvider]);

@@ -54,8 +54,10 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
     }
 
     const refreshToken = credential.refreshToken ?? "";
-    const createError = (message: string): ConnectionError =>
-      new ConnectionError("oauth_token_refresh_failed", message);
+    const createError = (message: string, providerCode?: string): ConnectionError =>
+      providerCode === "invalid_grant"
+        ? new ConnectionError("oauth_reauth_required", "Approve access again to reconnect this account.")
+        : new ConnectionError("oauth_token_refresh_failed", message);
     const providerOAuth = await this.providerLoader?.loadProviderOAuthRuntime?.(service);
     let refreshed: OAuthTokenResult;
     if (providerOAuth?.refreshAccessToken) {

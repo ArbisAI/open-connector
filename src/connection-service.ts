@@ -553,7 +553,9 @@ export class ConnectionService {
     const credential = stored.credential;
     return {
       status:
-        credential.authType === "oauth2" && !credential.refreshToken && isOAuthCredentialExpired(credential)
+        credential.authType === "oauth2" &&
+        (credential.metadata.oauthReauthRequired === true ||
+          (!credential.refreshToken && isOAuthCredentialExpired(credential)))
           ? "reauth_required"
           : "active",
       ...this.createConfiguredConnectionSummary(
@@ -877,6 +879,9 @@ export class ConnectionService {
     credential: OAuthCredential,
   ): Promise<OAuthCredential> {
     const service = connection.service;
+    if (credential.metadata.oauthReauthRequired === true) {
+      throw new ConnectionError("oauth_reauth_required", "Approve access again to reconnect this account.");
+    }
     if (!isOAuthCredentialExpired(credential)) {
       return credential;
     }
@@ -918,11 +923,30 @@ export class ConnectionService {
     refresher: IOAuthCredentialRefresher,
   ): Promise<OAuthCredential> {
     const { id, revision, service, connectionName } = connection;
-    const nextCredential = await withProviderHttpDispatchResult(
-      { operation: "oauth", service, connectionId: id, connectionName },
-      () => refresher.refresh(service, credential),
-      this.providerHttpDispatch,
-    );
+    let nextCredential: OAuthCredential;
+    try {
+      nextCredential = await withProviderHttpDispatchResult(
+        { operation: "oauth", service, connectionId: id, connectionName },
+        () => refresher.refresh(service, credential),
+        this.providerHttpDispatch,
+      );
+    } catch (error) {
+      if (error instanceof ConnectionError && error.code === "oauth_reauth_required") {
+        // A late failure must not invalidate credentials saved by a concurrent reconnect.
+        const updated = await this.store.updateCredential(
+          {
+            id,
+            revision,
+            service,
+            connectionName,
+            credential: { ...credential, metadata: { ...credential.metadata, oauthReauthRequired: true } },
+          },
+          true,
+        );
+        if (!updated) throw new ConnectionError("connection_changed", "The connection changed. Retry the action.");
+      }
+      throw error;
+    }
     const updated = await this.store.updateCredential(
       {
         id,

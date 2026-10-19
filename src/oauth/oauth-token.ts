@@ -98,7 +98,7 @@ interface TokenRequest extends OAuthTokenRequestOptions {
   createError: OAuthTokenErrorFactory;
 }
 
-export type OAuthTokenErrorFactory = (message: string) => Error;
+export type OAuthTokenErrorFactory = (message: string, providerCode?: string) => Error;
 
 interface TokenRevocationRequest {
   revocationUrl: string;
@@ -293,6 +293,9 @@ async function requestToken(input: TokenRequest): Promise<OAuthTokenResult> {
           // arbitrary response bytes out of the public error while distinguishing
           // an empty body from a non-conforming one.
           `OAuth token request failed (HTTP ${response.status}, ${bodyDescription}).`,
+        response.status >= 400 && response.status < 500 && response.status !== 429
+          ? (optionalString(rawPayload.error) ?? optionalString(payload.error))
+          : undefined,
       );
     }
 
