@@ -6,12 +6,10 @@ import { createPhoneVerificationRoutes } from "./phone-verification-routes.ts";
 const id = "12345678-1234-1234-1234-123456789012";
 function fixture() {
   const fetcher = vi.fn().mockResolvedValue(Response.json({ data: { id } }));
-  const resolve = vi
-    .fn()
-    .mockResolvedValue({
-      kind: "local",
-      getCredential: async () => ({ authType: "api_key", apiKey: "telnyx-secret" }),
-    });
+  const resolve = vi.fn().mockResolvedValue({
+    kind: "local",
+    getCredential: async () => ({ authType: "api_key", apiKey: "telnyx-secret" }),
+  });
   const app = createPhoneVerificationRoutes({
     connections: { resolveForExecution: resolve } as unknown as ConnectionService,
     fetcher,
@@ -93,5 +91,11 @@ describe("private phone verification", () => {
     const response = await f.call();
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain("123456");
+  });
+
+  it.each(["1234", "12345", "1234567", "12345a"])("rejects a code that is not six digits: %s", async (code) => {
+    const f = fixture();
+    expect((await f.call("check_phone_verification", { id, code })).status).toBe(400);
+    expect(f.fetcher).not.toHaveBeenCalled();
   });
 });

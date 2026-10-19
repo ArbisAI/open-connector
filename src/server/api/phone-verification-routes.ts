@@ -55,7 +55,7 @@ export function createPhoneVerificationRoutes({
     const code = optionalString(input?.code) || "";
     if (
       (start && !/^\+[1-9][0-9]{7,14}$/.test(number)) ||
-      (!start && (!/^[a-f0-9-]{36}$/i.test(id) || !/^[0-9]{4,10}$/.test(code)))
+      (!start && (!/^[a-f0-9-]{36}$/i.test(id) || !/^[0-9]{6}$/.test(code)))
     )
       return writeRuntimeFailure(context, {
         status: 400,
