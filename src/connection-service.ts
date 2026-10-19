@@ -152,6 +152,8 @@ export interface IConnectionStore {
   updateCredential(input: StoredLocalConnection, refresh?: boolean): Promise<boolean>;
   delete(service: string, connectionName: string): Promise<void>;
   list(): Promise<StoredConnection[]>;
+  /** One row by id. Optional so lightweight stores can fall back to list(). */
+  getById?(id: string): Promise<StoredConnection | undefined>;
 }
 
 interface ApiKeyCredentialValidationInput {
@@ -510,7 +512,11 @@ export class ConnectionService {
   }
 
   async getStoredConnection(id: string): Promise<StoredConnection> {
-    const connection = (await this.store.list()).find((item) => item.id === id);
+    // Read only the selected row: list() decodes every credential, so one unreadable
+    // row would make every by-id lookup fail (phone Verify, 2026-10-19).
+    const connection = this.store.getById
+      ? await this.store.getById(id)
+      : (await this.store.list()).find((item) => item.id === id);
     if (!connection) throw new ConnectionError("connection_not_found", "Connection not found.");
     return connection;
   }
