@@ -81,6 +81,7 @@ export function createPhoneVerificationRoutes({
       if (!response.ok) {
         if (!start && [400, 404, 422].includes(response.status))
           return writeRuntimeSuccess(context, { accepted: false });
+        console.warn(`[phone-verification] ${operation} provider status=${response.status}`);
         throw new Error("Provider unavailable");
       }
       const data = optionalRecord(optionalRecord(await response.json())?.data);
@@ -88,7 +89,16 @@ export function createPhoneVerificationRoutes({
       const verificationId = optionalString(data?.id);
       if (!verificationId) throw new Error("Invalid response");
       return writeRuntimeSuccess(context, { id: verificationId });
-    } catch {
+    } catch (error) {
+      // Class and code only: never the number, code, credential or provider body.
+      const code = (error as { code?: unknown } | null)?.code;
+      console.warn(
+        `[phone-verification] ${operation} failed: ${error instanceof Error ? error.name : typeof error}` +
+          (typeof code === "string" ? ` code=${code}` : "") +
+          (error instanceof Error && /^(Unavailable|Provider unavailable|Invalid response)$/.test(error.message)
+            ? ` reason=${error.message}`
+            : ""),
+      );
       return writeRuntimeFailure(context, {
         status: 503,
         errorCode: "unavailable",
