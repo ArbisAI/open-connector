@@ -1078,6 +1078,11 @@ export class ConnectionService {
       displayName,
       grantedScopes: normalizeGrantedScopes(grantedScopes),
       ...verifiedGoogleIdentity(validation, previous),
+      microsoftTenantId: validation.profile?.microsoftTenantId,
+      microsoftObjectId: validation.profile?.microsoftObjectId,
+      microsoftPrincipalName: validation.profile?.microsoftPrincipalName,
+      microsoftMail: validation.profile?.microsoftMail,
+      microsoftUserType: validation.profile?.microsoftUserType,
     };
   }
 

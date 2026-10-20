@@ -6,6 +6,7 @@ import type { OAuthTokenResult } from "./oauth-token.ts";
 import { ConnectionError } from "../connection-service.ts";
 import { optionalRecord, stringRecord } from "../core/cast.ts";
 import { providerFetch } from "../providers/provider-runtime.ts";
+import { isMicrosoftService, verifyMicrosoftIdentity } from "./microsoft-identity.ts";
 import { readOAuthClientConfigMetadata } from "./oauth-client-config-service.ts";
 import { expiresAtFromLifetime, requestRefreshToken, requestTokenRevocation } from "./oauth-token.ts";
 
@@ -93,8 +94,27 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
         ? credential.metadata.expires_in
         : refreshed.metadata.expires_in;
 
+    const { idToken, ...tokens } = refreshed;
+    if (isMicrosoftService(service) && idToken) {
+      const identity = await verifyMicrosoftIdentity(idToken, config.clientId, undefined);
+      if (
+        identity.tenantId !== credential.profile.microsoftTenantId ||
+        identity.objectId !== credential.profile.microsoftObjectId
+      )
+        throw new ConnectionError(
+          "oauth_reauth_required",
+          "Microsoft returned a different account during refresh. Reconnect Microsoft.",
+        );
+    }
+    const grantedScopes =
+      isMicrosoftService(service) && typeof refreshed.metadata.scope === "string"
+        ? refreshed.metadata.scope
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((scope) => scope.replace(/^https:\/\/graph.microsoft.com\//i, ""))
+        : credential.profile.grantedScopes;
     return {
-      ...refreshed,
+      ...tokens,
       authType: "oauth2",
       refreshToken: refreshed.refreshToken ?? credential.refreshToken,
       // `expires_in` is optional on a refresh response, and a credential without an
@@ -105,7 +125,7 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       // the stored token would look expired immediately and refresh on every call.
       expiresAt: refreshed.expiresAt ?? expiresAtFromLifetime(expiresIn),
       providerSecret: refreshed.providerSecret ?? credential.providerSecret,
-      profile: credential.profile,
+      profile: { ...credential.profile, grantedScopes },
       metadata: {
         ...credential.metadata,
         ...refreshed.metadata,

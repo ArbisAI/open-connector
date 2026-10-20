@@ -111,6 +111,49 @@ export function createConnectionRoutes({ connections, oauthFlow, saasOAuth }: Co
     const child = await materializeGoogleAccount(connections, context.req.param("appId"), body.service, body.email);
     return writeRuntimeSuccess(context, child ? serializeManagedConnection(child) : null);
   });
+  app.get("/connections/by-id/:appId/microsoft-accounts", async (context) => {
+    if (!hasAdminBearer(context))
+      return writeRuntimeFailure(context, {
+        status: 403,
+        errorCode: "forbidden",
+        message: "An administrator bearer is required.",
+      });
+    const children = [];
+    for (const service of ["outlook", "outlook_calendar"]) {
+      try {
+        children.push(
+          serializeManagedConnection(
+            await connections.getManagedConnectionByAlias(
+              service,
+              `microsoft-${context.req.param("appId")}-${service}`,
+            ),
+          ),
+        );
+      } catch (error) {
+        if (!(error instanceof ConnectionError) || error.code !== "connection_not_found") throw error;
+      }
+    }
+    return writeRuntimeSuccess(context, children);
+  });
+  app.post("/connections/by-id/:appId/microsoft-account", async (context) => {
+    if (!hasAdminBearer(context))
+      return writeRuntimeFailure(context, {
+        status: 403,
+        errorCode: "forbidden",
+        message: "An administrator bearer is required.",
+      });
+    const body = await readJsonBody(context);
+    if ((body.service !== "outlook" && body.service !== "outlook_calendar") || typeof body.subject !== "string")
+      throw new HttpRequestError("invalid_input", "A service and expected Microsoft identity are required.");
+    const { materializeMicrosoftAccount } = await import("../../oauth/microsoft-workspace.ts");
+    const child = await materializeMicrosoftAccount(
+      connections,
+      context.req.param("appId"),
+      body.service,
+      body.subject,
+    );
+    return writeRuntimeSuccess(context, serializeManagedConnection(child));
+  });
   for (const reconnect of [false, true]) {
     const path = reconnect ? "/connections/by-id/:appId/connect" : "/connections/:service/connect";
     app.post(path, async (context) => {

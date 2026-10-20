@@ -432,3 +432,34 @@ describe("OAuthCredentialRefreshService revoke", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 });
+
+describe("Microsoft child refresh", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+  it.each(["outlook", "outlook_calendar"])(
+    "rotates %s independently and records actual granted scopes",
+    async (service) => {
+      const mail = expiredCredential({});
+      mail.profile = { ...mail.profile, microsoftTenantId: "tenant", microsoftObjectId: "person" };
+      const sibling = { ...mail };
+      stubRefreshResponse({
+        refresh_token: "rotated-token",
+        scope: "User.Read https://graph.microsoft.com/Mail.ReadWrite",
+      });
+      const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(service, mail);
+      expect(refreshed.refreshToken).toBe("rotated-token");
+      expect(refreshed.profile.grantedScopes).toEqual(["User.Read", "Mail.ReadWrite"]);
+      expect(refreshed.profile.microsoftObjectId).toBe("person");
+      expect(sibling.refreshToken).toBe("refresh-token");
+      expect(mail.refreshToken).toBe("refresh-token");
+    },
+  );
+  it("never persists an identity token as a credential field", async () => {
+    stubRefreshResponse({ id_token: "identity-response" });
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh("example", expiredCredential({}));
+    expect(refreshed).not.toHaveProperty("idToken");
+    expect(refreshed.metadata).not.toHaveProperty("id_token");
+  });
+});

@@ -26,6 +26,8 @@ class OAuthTokenResponseSizeError extends Error {}
 /** Normalized provider token data returned to the shared OAuth lifecycle. */
 export interface OAuthTokenResult {
   accessToken: string;
+  /** Transient identity token; never expose it as connection metadata. */
+  idToken?: string;
   refreshToken?: string;
   tokenType: string;
   expiresAt?: string;
@@ -303,6 +305,7 @@ async function requestToken(input: TokenRequest): Promise<OAuthTokenResult> {
     const tokenType = optionalString(payload.token_type) ?? "Bearer";
     return {
       accessToken,
+      idToken: optionalString(payload.id_token),
       tokenType,
       refreshToken: optionalString(payload.refresh_token),
       expiresAt: expiresAtFromLifetime(payload.expires_in),

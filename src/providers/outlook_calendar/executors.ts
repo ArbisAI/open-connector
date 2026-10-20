@@ -9,9 +9,9 @@ import {
   optionalRawString,
   optionalRecord,
   optionalString,
-  requiredString,
 } from "../../core/cast.ts";
 import { compactJson, encodePathSegment } from "../../core/request.ts";
+import { microsoftProfile } from "../../oauth/microsoft-profile.ts";
 import { microsoftGraphJson, microsoftGraphRequest } from "../outlook/microsoft-graph.ts";
 import { providerInputError } from "../provider-runtime.ts";
 import { defineOAuthProviderExecutors, defineProviderProxy, requiredInputString } from "../provider-runtime.ts";
@@ -81,26 +81,8 @@ export const executors: ProviderExecutors = defineOAuthProviderExecutors(service
 });
 
 export const credentialValidators: CredentialValidators = {
-  async oauth2(input, { fetcher, signal }) {
-    const profile = await microsoftGraphJson<Record<string, unknown>>("me", {
-      accessToken: input.accessToken,
-      fetcher,
-      signal,
-      query: { $select: "id,displayName,mail,userPrincipalName" },
-      label: "Outlook Calendar credential validation",
-    });
-    const accountId = requiredString(profile.id, "Outlook Calendar current account id");
-    return {
-      profile: {
-        accountId,
-        displayName:
-          optionalString(profile.mail) ??
-          optionalString(profile.userPrincipalName) ??
-          optionalString(profile.displayName) ??
-          accountId,
-      },
-      metadata: { currentAccount: profile },
-    };
+  async oauth2(input, options) {
+    return { profile: await microsoftProfile(input, options) };
   },
 };
 

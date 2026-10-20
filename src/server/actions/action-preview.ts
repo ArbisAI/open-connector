@@ -155,6 +155,56 @@ export async function buildActionPreview(
       add("threadId", body.threadId ?? message?.threadId ?? original.threadId);
       add("draftId", body.id ?? original.draftId);
     }
+  } else if (action.service === "outlook" && request) {
+    preview.kind = "email";
+    preview.effect =
+      action.id.includes("send") || action.id.includes("reply")
+        ? "send"
+        : action.id.includes("update")
+          ? "update"
+          : "create";
+    const message = optionalRecord(body.message) ?? body;
+    const captured = optionalRecord(currentFields.message) ?? currentFields;
+    const reply = action.id === "outlook.reply_email";
+    const content = optionalRecord(message.body) ?? (reply ? undefined : optionalRecord(captured.body));
+    const replyTo =
+      Array.isArray(captured.replyTo) && captured.replyTo.length
+        ? captured.replyTo
+        : captured.from
+          ? [captured.from]
+          : undefined;
+    add("from", preview.account);
+    for (const [source, label] of Object.entries({ toRecipients: "to", ccRecipients: "cc", bccRecipients: "bcc" })) {
+      let recipients = message[source];
+      if (reply && source === "toRecipients") {
+        add("to", replyTo);
+        add("additionalRecipients", recipients);
+        continue;
+      }
+      if (recipients === undefined && !reply) recipients = captured[source];
+      add(label, recipients);
+    }
+    add("subject", message.subject ?? captured.subject);
+    add("attachments", message.attachments ?? (reply ? undefined : captured.attachments));
+    add("messageId", original.messageId);
+    preview.body = reply && typeof body.comment === "string" ? body.comment : optionalString(content?.content);
+    if (content?.contentType === "HTML" || content?.contentType === "html") preview.html = preview.body;
+  } else if (action.service === "outlook_calendar" && request) {
+    if (preview.kind !== "deletion") preview.kind = "calendar";
+    if (preview.effect === "generic")
+      preview.effect = action.id === "outlook_calendar.create_event" ? "create" : "update";
+    const captured = optionalRecord(currentFields.event) ?? currentFields;
+    add("calendarId", original.calendarId ?? "default");
+    add("eventId", original.eventId);
+    for (const key of ["subject", "start", "end", "attendees", "location", "recurrence"])
+      add(key, body[key] ?? captured[key], captured[key]);
+    for (const [key, value] of Object.entries(body)) add(key, value, captured[key]);
+    if (
+      !["outlook_calendar.create_event", "outlook_calendar.update_event", "outlook_calendar.delete_event"].includes(
+        action.id,
+      )
+    )
+      add("response", action.id.split(".")[1]?.replaceAll("_", " "));
   } else if (action.service === "googlecalendar" && request) {
     if (preview.kind !== "deletion") preview.kind = "calendar";
     if (preview.effect === "generic")

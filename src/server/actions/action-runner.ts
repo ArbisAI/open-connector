@@ -85,18 +85,22 @@ export class ActionRunner {
     prepared.createdAt = Date.now();
     const fields = input.input as Record<string, unknown>;
     const reference =
-      action.service === "googlecalendar" && fields.eventId
-        ? {
-            actionId: "googlecalendar.get_event",
-            input: { calendarId: fields.calendarId ?? "primary", eventId: fields.eventId },
-          }
-        : action.service === "googledrive" && fields.fileId
-          ? { actionId: "googledrive.files.get", input: { fileId: fields.fileId } }
-          : action.service === "notion" && fields.pageId
-            ? { actionId: "notion.retrieve_page", input: { pageId: fields.pageId } }
-            : action.service === "notion" && fields.blockId
-              ? { actionId: "notion.retrieve_block", input: { blockId: fields.blockId } }
-              : undefined;
+      action.service === "outlook" && fields.messageId
+        ? { actionId: "outlook.get_message", input: { messageId: fields.messageId } }
+        : action.service === "outlook_calendar" && fields.eventId
+          ? { actionId: "outlook_calendar.get_event", input: { eventId: fields.eventId } }
+          : action.service === "googlecalendar" && fields.eventId
+            ? {
+                actionId: "googlecalendar.get_event",
+                input: { calendarId: fields.calendarId ?? "primary", eventId: fields.eventId },
+              }
+            : action.service === "googledrive" && fields.fileId
+              ? { actionId: "googledrive.files.get", input: { fileId: fields.fileId } }
+              : action.service === "notion" && fields.pageId
+                ? { actionId: "notion.retrieve_page", input: { pageId: fields.pageId } }
+                : action.service === "notion" && fields.blockId
+                  ? { actionId: "notion.retrieve_block", input: { blockId: fields.blockId } }
+                  : undefined;
     let current: unknown;
     if (reference && action.service === "googlecalendar") {
       const saved = prepared.reads.find((read) =>
@@ -107,6 +111,18 @@ export class ActionRunner {
     if (current === undefined && reference && this.options.catalog.actionsById.has(reference.actionId)) {
       const read = await this.run({ ...input, ...reference, prepare: false, prepared: undefined });
       if (read?.result.ok) current = read.result.output;
+      else if (action.service === "outlook" || action.service === "outlook_calendar") {
+        return {
+          ...run,
+          result: read?.result ?? {
+            ok: false,
+            error: {
+              code: "provider_error",
+              message: "The Outlook message or event could not be read for review. Retry before approving this action.",
+            },
+          },
+        };
+      }
     }
     if (
       action.service === "googlecalendar" &&

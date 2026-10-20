@@ -367,6 +367,11 @@ export function serializeManagedConnection(connection: ManagedConnectionSummary)
   status: ManagedConnectionSummary["status"];
   providerAccountId: string;
   comment: string | null;
+  microsoftTenantId?: string;
+  microsoftObjectId?: string;
+  microsoftPrincipalName?: string;
+  microsoftMail?: string;
+  microsoftUserType?: string;
   googleSubject?: string;
   hostedDomain?: string;
   emailVerified?: boolean;
@@ -377,6 +382,11 @@ export function serializeManagedConnection(connection: ManagedConnectionSummary)
     status: connection.status,
     providerAccountId: connection.profile.accountId,
     comment: connection.comment,
+    microsoftTenantId: connection.profile.microsoftTenantId,
+    microsoftObjectId: connection.profile.microsoftObjectId,
+    microsoftPrincipalName: connection.profile.microsoftPrincipalName,
+    microsoftMail: connection.profile.microsoftMail,
+    microsoftUserType: connection.profile.microsoftUserType,
     googleSubject: connection.profile.googleSubject,
     hostedDomain: connection.profile.hostedDomain,
     emailVerified: connection.profile.emailVerified,
