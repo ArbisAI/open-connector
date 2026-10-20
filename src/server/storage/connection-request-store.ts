@@ -212,7 +212,9 @@ export class ConnectionRequestStore {
 
   private retireRequests(owner: string, service: string, now: number): RequestStatement[] {
     const expired = "expires_at <= ?";
-    const superseded = "owner = ? and service = ? and phase = 'pending'";
+    // Microsoft broker requests belong to separate Nexo members behind one admin bearer.
+    // The backend serializes/replaces requests per member, so one member cannot retire another.
+    const superseded = "owner = ? and service = ? and service <> 'microsoft365' and phase = 'pending'";
     return [
       queueSaasRequests(expired, [new Date(now - 86_400_000).toISOString()]),
       queueSaasRequests(superseded, [owner, service]),

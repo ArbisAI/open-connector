@@ -7,6 +7,18 @@ import { readBoundedResponseBytes } from "../core/request.ts";
 const maxSnapshotBytes = 1024 * 1024;
 const savedHeaders = ["content-type", "if-match", "if-none-match", "notion-version"];
 const supportedActions = new Set([
+  "outlook.create_draft",
+  "outlook.update_draft",
+  "outlook.send_draft",
+  "outlook.send_email",
+  "outlook.reply_email",
+  "outlook_calendar.create_event",
+  "outlook_calendar.update_event",
+  "outlook_calendar.delete_event",
+  "outlook_calendar.cancel_event",
+  "outlook_calendar.accept_event",
+  "outlook_calendar.decline_event",
+  "outlook_calendar.tentatively_accept_event",
   "gmail.send_email",
   "gmail.reply_email",
   "gmail.reply_to_thread",

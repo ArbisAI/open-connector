@@ -44,6 +44,23 @@ describe("OAuthCredentialRefreshService", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    ["invalid_grant", 400, "oauth_reauth_required"],
+    ["invalid_client", 401, "oauth_token_refresh_failed"],
+    ["invalid_grant", 503, "oauth_token_refresh_failed"],
+    ["temporarily_unavailable", 503, "oauth_token_refresh_failed"],
+  ])("classifies %s without guessing from the provider message", async (code, status, expected) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ error: code, error_description: "Token has been expired or revoked." }, { status }),
+      ),
+    );
+    await expect(
+      new OAuthCredentialRefreshService(clientConfigs).refresh("example", expiredCredential({ expires_in: 3600 })),
+    ).rejects.toMatchObject({ code: expected });
+  });
+
   // A refresh rotates tokens INSIDE an existing authorization — it is not a
   // new consent — so the provenance has to survive it.
   //
@@ -413,5 +430,39 @@ describe("OAuthCredentialRefreshService revoke", () => {
       "Configure an OAuth client for example before revoking its token.",
     );
     expect(fetcher).not.toHaveBeenCalled();
+  });
+});
+
+describe("Microsoft child refresh", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+  it.each([
+    ["outlook", "tenant"],
+    ["outlook_calendar", "tenant"],
+    ["outlook", "9188040d-6c67-4c5b-b112-36a304b66dad"],
+    ["outlook_calendar", "9188040d-6c67-4c5b-b112-36a304b66dad"],
+  ])("rotates %s independently for tenant %s and records actual granted scopes", async (service, tenantId) => {
+    const mail = expiredCredential({});
+    mail.profile = { ...mail.profile, microsoftTenantId: tenantId, microsoftObjectId: "person" };
+    const sibling = { ...mail };
+    stubRefreshResponse({
+      refresh_token: "rotated-token",
+      scope: "User.Read https://graph.microsoft.com/Mail.ReadWrite",
+    });
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(service, mail);
+    expect(refreshed.refreshToken).toBe("rotated-token");
+    expect(refreshed.profile.grantedScopes).toEqual(["User.Read", "Mail.ReadWrite"]);
+    expect(refreshed.profile.microsoftObjectId).toBe("person");
+    expect(refreshed.profile.microsoftTenantId).toBe(tenantId);
+    expect(sibling.refreshToken).toBe("refresh-token");
+    expect(mail.refreshToken).toBe("refresh-token");
+  });
+  it("never persists an identity token as a credential field", async () => {
+    stubRefreshResponse({ id_token: "identity-response" });
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh("example", expiredCredential({}));
+    expect(refreshed).not.toHaveProperty("idToken");
+    expect(refreshed.metadata).not.toHaveProperty("id_token");
   });
 });
