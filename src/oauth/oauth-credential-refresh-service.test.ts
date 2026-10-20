@@ -438,24 +438,27 @@ describe("Microsoft child refresh", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
-  it.each(["outlook", "outlook_calendar"])(
-    "rotates %s independently and records actual granted scopes",
-    async (service) => {
-      const mail = expiredCredential({});
-      mail.profile = { ...mail.profile, microsoftTenantId: "tenant", microsoftObjectId: "person" };
-      const sibling = { ...mail };
-      stubRefreshResponse({
-        refresh_token: "rotated-token",
-        scope: "User.Read https://graph.microsoft.com/Mail.ReadWrite",
-      });
-      const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(service, mail);
-      expect(refreshed.refreshToken).toBe("rotated-token");
-      expect(refreshed.profile.grantedScopes).toEqual(["User.Read", "Mail.ReadWrite"]);
-      expect(refreshed.profile.microsoftObjectId).toBe("person");
-      expect(sibling.refreshToken).toBe("refresh-token");
-      expect(mail.refreshToken).toBe("refresh-token");
-    },
-  );
+  it.each([
+    ["outlook", "tenant"],
+    ["outlook_calendar", "tenant"],
+    ["outlook", "9188040d-6c67-4c5b-b112-36a304b66dad"],
+    ["outlook_calendar", "9188040d-6c67-4c5b-b112-36a304b66dad"],
+  ])("rotates %s independently for tenant %s and records actual granted scopes", async (service, tenantId) => {
+    const mail = expiredCredential({});
+    mail.profile = { ...mail.profile, microsoftTenantId: tenantId, microsoftObjectId: "person" };
+    const sibling = { ...mail };
+    stubRefreshResponse({
+      refresh_token: "rotated-token",
+      scope: "User.Read https://graph.microsoft.com/Mail.ReadWrite",
+    });
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(service, mail);
+    expect(refreshed.refreshToken).toBe("rotated-token");
+    expect(refreshed.profile.grantedScopes).toEqual(["User.Read", "Mail.ReadWrite"]);
+    expect(refreshed.profile.microsoftObjectId).toBe("person");
+    expect(refreshed.profile.microsoftTenantId).toBe(tenantId);
+    expect(sibling.refreshToken).toBe("refresh-token");
+    expect(mail.refreshToken).toBe("refresh-token");
+  });
   it("never persists an identity token as a credential field", async () => {
     stubRefreshResponse({ id_token: "identity-response" });
     const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh("example", expiredCredential({}));

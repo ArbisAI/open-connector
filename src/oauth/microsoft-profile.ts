@@ -2,6 +2,7 @@ import type { CredentialProfileInput, ResolvedCredential, CredentialValidatorOpt
 
 import { optionalRecord, optionalString } from "../core/cast.ts";
 import { createProviderFetch, ProviderRequestError, runProviderRequest } from "../providers/provider-runtime.ts";
+import { microsoftGraphAccountMatches, microsoftPersonalTenant } from "./microsoft-identity.ts";
 
 /** Identity and mailbox checks share the backend's 30-second connection request budget. */
 export const microsoftValidationTimeoutMs = 10_000;
@@ -11,11 +12,18 @@ export async function microsoftProfile(
   input: Extract<ResolvedCredential, { authType: "oauth2" }>,
   { fetcher, signal }: CredentialValidatorOptions,
 ): Promise<CredentialProfileInput> {
+  const identity = optionalRecord(input.metadata.microsoftIdentity);
+  const objectId = optionalString(identity?.objectId);
+  const tenantId = optionalString(identity?.tenantId);
+  const fields =
+    tenantId === microsoftPersonalTenant
+      ? "id,displayName,mail,userPrincipalName"
+      : "id,displayName,mail,userPrincipalName,userType";
   const account = await runProviderRequest(
     { label: "Microsoft identity validation", signal, timeoutMs: microsoftValidationTimeoutMs },
     async (requestSignal) => {
       const response = await createProviderFetch({ fetch: fetcher, skipDnsValidation: true })(
-        "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName,userType",
+        `https://graph.microsoft.com/v1.0/me?$select=${fields}`,
         {
           headers: { Authorization: `Bearer ${input.accessToken}` },
           signal: requestSignal,
@@ -27,10 +35,7 @@ export async function microsoftProfile(
   );
   const accountId = optionalString(account.id);
   if (!accountId) throw new ProviderRequestError(401, "Microsoft returned no account identifier.");
-  const identity = optionalRecord(input.metadata.microsoftIdentity);
-  const objectId = optionalString(identity?.objectId);
-  const tenantId = optionalString(identity?.tenantId);
-  if (identity && (!objectId || !tenantId || objectId.toLowerCase() !== accountId.toLowerCase()))
+  if (identity && (!objectId || !tenantId || !microsoftGraphAccountMatches(tenantId, objectId, accountId)))
     throw new ProviderRequestError(401, "Microsoft mailbox and authorized account do not match.");
   const principal = optionalString(account.userPrincipalName);
   const mail = optionalString(account.mail);
@@ -39,7 +44,7 @@ export async function microsoftProfile(
     displayName: mail ?? principal ?? optionalString(account.displayName) ?? accountId,
     microsoftObjectId: objectId,
     microsoftTenantId: tenantId,
-    microsoftPrincipalName: principal,
+    microsoftPrincipalName: tenantId === microsoftPersonalTenant ? (mail ?? principal) : principal,
     microsoftMail: mail,
     microsoftUserType: optionalString(account.userType),
     grantedScopes:

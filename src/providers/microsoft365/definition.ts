@@ -40,7 +40,7 @@ export const provider: ProviderDefinition = {
           inputType: "text",
           required: true,
           secret: false,
-          defaultValue: "organizations",
+          defaultValue: "common",
         },
       ],
     },

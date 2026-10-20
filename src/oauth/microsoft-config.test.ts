@@ -38,6 +38,12 @@ async function configured() {
   return { configs, values };
 }
 describe("Microsoft broker application setup", () => {
+  it("defaults new broker apps to both organizational and personal accounts", () => {
+    expect(
+      broker.auth[0].type === "oauth2" &&
+        broker.auth[0].clientConfigFields?.find((field) => field.key === "tenant")?.defaultValue,
+    ).toBe("common");
+  });
   it("reuses the existing app without creating another stored configuration", async () => {
     const { configs, values } = await configured();
     const config = await configs.getConfig("microsoft365");
@@ -55,5 +61,11 @@ describe("Microsoft broker application setup", () => {
     const { configs, values } = await configured();
     values.set("outlook_calendar", { ...values.get("outlook_calendar")!, clientId: "different" });
     expect(await configs.getConfig("microsoft365")).toBeUndefined();
+  });
+  it("preserves a common authority when reusing the Microsoft app", async () => {
+    const { configs, values } = await configured();
+    for (const service of ["outlook", "outlook_calendar"])
+      values.set(service, { ...values.get(service)!, extra: { tenant: "common" } });
+    expect((await configs.getConfig("microsoft365"))?.extra.tenant).toBe("common");
   });
 });
