@@ -24,6 +24,7 @@ interface StripeRequestInput {
   method: "GET" | "POST" | "DELETE";
   query?: Record<string, unknown>;
   body?: Record<string, unknown>;
+  idempotencyKey?: string;
 }
 
 const service = "stripe";
@@ -116,6 +117,15 @@ export const stripeActionHandlers: ProviderActionHandlers<"stripe", StripeAction
   },
   search_prices(input, context) {
     return executeStripeList("/v1/prices/search", "prices", input, context);
+  },
+  list_invoices(input, context) {
+    return executeStripeList("/v1/invoices", "invoices", input, context);
+  },
+  get_invoice(input, context) {
+    return executeInvoiceRead(`/v1/invoices/${encodeStripePath(input.invoiceId, "invoiceId")}`, context);
+  },
+  create_payment_link(input, context) {
+    return executeCreatePaymentLink(input, context);
   },
 };
 
@@ -256,9 +266,87 @@ async function executePriceRead(path: string, context: StripeActionContext) {
   return { price: optionalRecord(price) ?? null };
 }
 
+async function executeInvoiceRead(path: string, context: StripeActionContext) {
+  const invoice = await stripeRequest(path, {
+    apiKey: context.apiKey,
+    fetcher: context.fetcher,
+    method: "GET",
+  });
+  return { invoice: optionalRecord(invoice) ?? null };
+}
+
+/**
+ * One exact amount, one link. Stripe payment links price from a Price object,
+ * so the link is created in two idempotent steps: a one-off price for the
+ * amount, then a single-use link for that price. Both requests derive their
+ * Stripe idempotency key from the caller's key, so a retry after a lost
+ * response returns the same price and the same link.
+ */
+async function executeCreatePaymentLink(input: Record<string, unknown>, context: StripeActionContext) {
+  const amount = input.amount;
+  if (typeof amount !== "number" || !Number.isInteger(amount) || amount < 1) {
+    throw new ProviderRequestError(400, "amount must be a positive integer in the smallest currency unit");
+  }
+  const currency = typeof input.currency === "string" ? input.currency.trim().toLowerCase() : "";
+  if (!/^[a-z]{3}$/.test(currency)) {
+    throw new ProviderRequestError(400, "currency must be a three-letter ISO code");
+  }
+  const description = optionalString(input.description)?.trim() ?? "";
+  if (!description) {
+    throw new ProviderRequestError(400, "description is required");
+  }
+  const idempotencyKey = optionalString(input.idempotencyKey)?.trim() ?? "";
+  if (!idempotencyKey) {
+    throw new ProviderRequestError(400, "idempotencyKey is required");
+  }
+  const metadata = optionalRecord(input.metadata) ?? {};
+
+  const price = requiredResponseRecord(
+    await stripeRequest("/v1/prices", {
+      apiKey: context.apiKey,
+      fetcher: context.fetcher,
+      method: "POST",
+      idempotencyKey: `${idempotencyKey}:price`,
+      body: { currency, unit_amount: amount, product_data: { name: description }, metadata },
+    }),
+    "stripe price response",
+  );
+  const priceId = optionalString(price.id);
+  if (!priceId) {
+    throw new ProviderRequestError(502, "Stripe returned a price without an id");
+  }
+  const link = requiredResponseRecord(
+    await stripeRequest("/v1/payment_links", {
+      apiKey: context.apiKey,
+      fetcher: context.fetcher,
+      method: "POST",
+      idempotencyKey: `${idempotencyKey}:link`,
+      body: {
+        line_items: [{ price: priceId, quantity: 1 }],
+        restrictions: { completed_sessions: { limit: 1 } },
+        metadata,
+      },
+    }),
+    "stripe payment link response",
+  );
+  const paymentLinkId = optionalString(link.id);
+  const url = optionalString(link.url);
+  if (!paymentLinkId || !url) {
+    throw new ProviderRequestError(502, "Stripe returned a payment link without an id or url");
+  }
+  return {
+    paymentLinkId,
+    url,
+    priceId,
+    amount,
+    currency,
+    active: link.active !== false,
+  };
+}
+
 async function executeStripeList(
   path: string,
-  outputKey: "customers" | "products" | "prices",
+  outputKey: "customers" | "products" | "prices" | "invoices",
   input: Record<string, unknown>,
   context: StripeActionContext,
 ) {
@@ -297,6 +385,9 @@ async function stripeRequest(path: string, input: StripeRequestInput): Promise<u
     "stripe-version": stripeApiVersion,
     "user-agent": providerUserAgent,
   };
+  if (input.idempotencyKey) {
+    headers["idempotency-key"] = input.idempotencyKey;
+  }
 
   let body: string | undefined;
   if (input.body) {
@@ -313,7 +404,7 @@ async function stripeRequest(path: string, input: StripeRequestInput): Promise<u
   });
 
   if (!response.ok) {
-    throw mapStripeError(response.status, await readStripeErrorMessage(response));
+    throw mapStripeError(response.status, await readStripeError(response));
   }
 
   if (response.status === 204) {
@@ -329,9 +420,11 @@ function appendStripeParams(params: URLSearchParams, value: unknown, prefix?: st
   }
 
   if (Array.isArray(value)) {
-    for (const item of value) {
-      appendStripeParams(params, item, prefix);
-    }
+    value.forEach((item, index) => {
+      // Stripe addresses object list entries by index (line_items[0][price]).
+      const itemPrefix = item !== null && typeof item === "object" && prefix ? `${prefix}[${index}]` : prefix;
+      appendStripeParams(params, item, itemPrefix);
+    });
     return;
   }
 
@@ -361,23 +454,33 @@ function omitKeys(input: Record<string, unknown>, keys: string[]): Record<string
   return Object.fromEntries(Object.entries(input).filter(([key]) => !omitted.has(key)));
 }
 
-async function readStripeErrorMessage(response: Response): Promise<string> {
+interface StripeErrorBody {
+  message: string;
+  type?: string;
+}
+
+async function readStripeError(response: Response): Promise<StripeErrorBody> {
   try {
     const payload = optionalRecord(await response.json());
     const error = optionalRecord(payload?.error);
     const message = optionalString(error?.message);
     if (message) {
-      return message;
+      return { message, type: optionalString(error?.type) };
     }
   } catch {
     // Stripe can return HTML or an empty body for edge errors.
   }
 
   const text = await response.text().catch(() => "");
-  return text.trim() || `Stripe request failed with status ${response.status}`;
+  return { message: text.trim() || `Stripe request failed with status ${response.status}` };
 }
 
-function mapStripeError(status: number, message: string): ProviderRequestError {
+function mapStripeError(status: number, error: StripeErrorBody): ProviderRequestError {
+  const message = error.message;
+  if (error.type === "idempotency_error") {
+    return new ProviderRequestError(409, message || "Stripe idempotency key was reused with different parameters");
+  }
+
   if (status === 401 || status === 403) {
     return new ProviderRequestError(status, message || "Stripe API key is invalid");
   }

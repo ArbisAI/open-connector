@@ -46,6 +46,15 @@ const createdFilter = s.object(
   },
   { description: "A Stripe created timestamp interval filter." },
 );
+const invoiceOutput = output("A Stripe invoice result.", { invoice: s.nullable(rawStripeObject) });
+const paymentLinkOutput = output("A Stripe payment link for one exact amount.", {
+  paymentLinkId: s.string({ description: "The Stripe payment link ID." }),
+  url: s.url("The hosted checkout URL to send to the payer."),
+  priceId: s.string({ description: "The one-off Stripe price created for this link." }),
+  amount: s.integer({ description: "The amount in the smallest currency unit, as charged." }),
+  currency: s.string({ description: "Three-letter ISO currency code in lowercase." }),
+  active: s.boolean({ description: "Whether the link accepts payments." }),
+});
 const recurring = s.object(
   {
     interval: s.stringEnum(["day", "week", "month", "year"], { description: "The billing frequency interval." }),
@@ -385,6 +394,63 @@ const actions: StripeActionSource[] = [
     ),
     output("Stripe price search results.", { prices: rawStripeList }),
   ),
+  action(
+    "list_invoices",
+    "read",
+    "List Stripe invoices with optional customer, status, due date, and cursor filters.",
+    input("Input for listing Stripe invoices.", {
+      ...paginationInput,
+      customer: stripeId("Filter invoices by Stripe customer ID."),
+      status: s.stringEnum(["draft", "open", "paid", "uncollectible", "void"], {
+        description: "Filter invoices by status.",
+      }),
+      collection_method: s.stringEnum(["charge_automatically", "send_invoice"], {
+        description: "Filter invoices by collection method.",
+      }),
+      created: createdFilter,
+      due_date: createdFilter,
+    }),
+    output("Stripe invoices page.", { invoices: rawStripeList }),
+  ),
+  action(
+    "get_invoice",
+    "read",
+    "Retrieve a Stripe invoice by ID, including its current status and amount due.",
+    input(
+      "Input for retrieving a Stripe invoice.",
+      {
+        invoiceId: stripeId("The Stripe invoice ID to retrieve."),
+      },
+      ["invoiceId"],
+    ),
+    invoiceOutput,
+  ),
+  action(
+    "create_payment_link",
+    "write",
+    "Create a single-use Stripe payment link for one exact amount. Creating the link charges nobody; sending it to a payer is a separate, approved step.",
+    input(
+      "Input for creating a Stripe payment link.",
+      {
+        amount: s.integer({
+          minimum: 1,
+          description: "The exact amount in the smallest currency unit, for example 125000 for MXN 1,250.00.",
+        }),
+        currency: s.string({
+          minLength: 3,
+          maxLength: 3,
+          description: "Three-letter ISO currency code, for example mxn or usd.",
+        }),
+        description: nonEmptyString("What the payer is paying for, shown at checkout, for example the invoice number."),
+        idempotencyKey: nonEmptyString(
+          "A caller-chosen key that is stable for this invoice. Repeating a request with the same key returns the same link instead of creating another.",
+        ),
+        metadata,
+      },
+      ["amount", "currency", "description", "idempotencyKey"],
+    ),
+    paymentLinkOutput,
+  ),
 ];
 
 export type StripeActionName =
@@ -405,7 +471,10 @@ export type StripeActionName =
   | "update_price"
   | "get_price"
   | "list_prices"
-  | "search_prices";
+  | "search_prices"
+  | "list_invoices"
+  | "get_invoice"
+  | "create_payment_link";
 
 export const stripeActions: ActionDefinition[] = actions.map((source) =>
   defineProviderAction(service, {
