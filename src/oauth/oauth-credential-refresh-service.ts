@@ -106,13 +106,20 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
           "Microsoft returned a different account during refresh. Reconnect Microsoft.",
         );
     }
-    const grantedScopes =
-      isMicrosoftService(service) && typeof refreshed.metadata.scope === "string"
-        ? refreshed.metadata.scope
-            .split(/\s+/)
-            .filter(Boolean)
-            .map((scope) => scope.replace(/^https:\/\/graph.microsoft.com\//i, ""))
-        : credential.profile.grantedScopes;
+    const google = service === "gmail" || service === "googlecalendar" || service === "googleworkspace";
+    const microsoft = isMicrosoftService(service);
+    const scope = refreshed.metadata.scope;
+    let grantedScopes = credential.profile.grantedScopes;
+    if ((google || microsoft) && typeof scope === "string") {
+      // A reported grant replaces the old one, including removed permissions and an empty grant.
+      grantedScopes = scope.split(/\s+/).filter(Boolean);
+      if (microsoft)
+        grantedScopes = grantedScopes.map((value) => value.replace(/^https:\/\/graph.microsoft.com\//i, ""));
+    }
+    const metadata = { ...credential.metadata, ...refreshed.metadata };
+    // Google may omit scope on refresh. Keep the last provider-reported value so
+    // later profile validation agrees with the preserved grant, never requested scopes.
+    if (google && typeof scope !== "string") metadata.scope = credential.metadata.scope;
     return {
       ...tokens,
       authType: "oauth2",
@@ -127,8 +134,7 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       providerSecret: refreshed.providerSecret ?? credential.providerSecret,
       profile: { ...credential.profile, grantedScopes },
       metadata: {
-        ...credential.metadata,
-        ...refreshed.metadata,
+        ...metadata,
         // Refresh rotates tokens within the existing authorization, including legacy absence.
         oauthAuthorizationId: credential.metadata.oauthAuthorizationId,
         expires_in: expiresIn,

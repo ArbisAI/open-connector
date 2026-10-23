@@ -61,6 +61,44 @@ describe("OAuthCredentialRefreshService", () => {
     ).rejects.toMatchObject({ code: expected });
   });
 
+  describe.each(["gmail", "googlecalendar", "googleworkspace"])("%s granted permissions", (service) => {
+    const read = "https://www.googleapis.com/auth/calendar.readonly";
+    const write = "https://www.googleapis.com/auth/calendar.events";
+    const owned = "https://www.googleapis.com/auth/calendar.events.owned";
+
+    it.each([
+      [read, `${read} ${write}`, [read, write]],
+      [`${read} ${write}`, read, [read]],
+      [write, owned, [owned]],
+      [write, "", []],
+    ])("replaces %s with the provider's grant %s", async (previous, scope, expected) => {
+      const stored = expiredCredential({ scope: previous, expires_in: 3600 });
+      stored.profile.grantedScopes = previous.split(" ");
+      stubRefreshResponse({ scope });
+      const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(service, stored);
+      expect(refreshed.profile.grantedScopes).toEqual(expected);
+      expect(refreshed.metadata.scope).toBe(scope);
+      expect(refreshed.profile.accountId).toBe(stored.profile.accountId);
+      expect(stored.profile.grantedScopes).toEqual(previous.split(" "));
+    });
+
+    it("preserves known scopes when the refresh response omits scope", async () => {
+      const stored = expiredCredential({ scope: read, expires_in: 3600 });
+      stored.profile.grantedScopes = [read];
+      stubRefreshResponse({});
+      const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(service, stored);
+      expect(refreshed.profile.grantedScopes).toEqual([read]);
+      expect(refreshed.metadata.scope).toBe(read);
+    });
+
+    it("does not invent permissions when neither token response reported them", async () => {
+      stubRefreshResponse({});
+      const refreshed = await new OAuthCredentialRefreshService(clientConfigs).refresh(service, expiredCredential({}));
+      expect(refreshed.profile.grantedScopes).toEqual([]);
+      expect(refreshed.metadata.scope).toBeUndefined();
+    });
+  });
+
   // A refresh rotates tokens INSIDE an existing authorization — it is not a
   // new consent — so the provenance has to survive it.
   //
