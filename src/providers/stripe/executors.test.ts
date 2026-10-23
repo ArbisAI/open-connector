@@ -213,10 +213,55 @@ describe("stripe invoice reads", () => {
     expect(result).toEqual({ invoice: { id: "in_1", status: "paid" } });
   });
 
-  it("declares invoice reads as read actions and offers no refund or charge action", () => {
+  it("declares invoice and balance reads as read actions and offers no refund or charge-creation action", () => {
     const names = new Map(stripeActions.map((action) => [action.name, action.operationType]));
     expect(names.get("list_invoices")).toBe("read");
     expect(names.get("get_invoice")).toBe("read");
-    expect([...names.keys()].some((name) => /refund|charge|payment_intent/.test(name))).toBe(false);
+    expect(names.get("search_invoices")).toBe("read");
+    expect(names.get("get_balance")).toBe("read");
+    expect(names.get("list_balance_transactions")).toBe("read");
+    expect(names.get("list_charges")).toBe("read");
+    expect([...names.keys()].some((name) => /refund|create_charge|payment_intent/.test(name))).toBe(false);
+  });
+});
+
+describe("stripe balance and charge reads", () => {
+  it("reads the account balance from Stripe", async () => {
+    const { fetcher, requests } = createFetcher({
+      "GET https://api.stripe.com/v1/balance": () => ({
+        body: {
+          object: "balance",
+          available: [{ amount: 4200, currency: "usd" }],
+          pending: [{ amount: 800, currency: "usd" }],
+        },
+      }),
+    });
+    const result = await stripeActionHandlers.get_balance({}, { apiKey, fetcher });
+    expect(requests[0].method).toBe("GET");
+    expect(result).toEqual({
+      balance: {
+        object: "balance",
+        available: [{ amount: 4200, currency: "usd" }],
+        pending: [{ amount: 800, currency: "usd" }],
+      },
+      available: [{ amount: 4200, currency: "usd" }],
+      pending: [{ amount: 800, currency: "usd" }],
+    });
+  });
+
+  it("lists charges without creating one", async () => {
+    const { fetcher, requests } = createFetcher({
+      "GET https://api.stripe.com/v1/charges": () => ({
+        body: { object: "list", url: "/v1/charges", has_more: false, data: [{ id: "ch_1", amount: 4200 }] },
+      }),
+    });
+    const result = await stripeActionHandlers.list_charges({ customer: "cus_1", limit: 10 }, { apiKey, fetcher });
+    const query = new URL(requests[0].url).searchParams;
+    expect(requests[0].method).toBe("GET");
+    expect(query.get("customer")).toBe("cus_1");
+    expect(query.get("limit")).toBe("10");
+    expect(result).toEqual({
+      charges: { object: "list", url: "/v1/charges", has_more: false, data: [{ id: "ch_1", amount: 4200 }] },
+    });
   });
 });

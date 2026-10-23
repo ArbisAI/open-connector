@@ -47,6 +47,11 @@ const createdFilter = s.object(
   { description: "A Stripe created timestamp interval filter." },
 );
 const invoiceOutput = output("A Stripe invoice result.", { invoice: s.nullable(rawStripeObject) });
+const balanceOutput = output("The current Stripe account balance.", {
+  balance: rawStripeObject,
+  available: s.array(rawStripeObject, { description: "Funds available to pay out, by currency." }),
+  pending: s.array(rawStripeObject, { description: "Funds that are not yet available, by currency." }),
+});
 const paymentLinkOutput = output("A Stripe payment link for one exact amount.", {
   paymentLinkId: s.string({ description: "The Stripe payment link ID." }),
   url: s.url("The hosted checkout URL to send to the payer."),
@@ -426,6 +431,58 @@ const actions: StripeActionSource[] = [
     invoiceOutput,
   ),
   action(
+    "search_invoices",
+    "read",
+    "Search Stripe invoices with Stripe's search query syntax.",
+    input(
+      "Input for searching Stripe invoices.",
+      {
+        query: nonEmptyString("A Stripe invoice search query, such as status:'open'."),
+        limit: paginationInput.limit,
+        page: s.string({ description: "A Stripe search pagination token returned by a previous search response." }),
+      },
+      ["query"],
+    ),
+    output("Stripe invoice search results.", { invoices: rawStripeList }),
+  ),
+  action(
+    "get_balance",
+    "read",
+    "Retrieve the current available and pending balance of the Stripe account.",
+    input("No input is required to retrieve the Stripe account balance.", {}),
+    balanceOutput,
+  ),
+  action(
+    "list_balance_transactions",
+    "read",
+    "List Stripe balance transactions, including charges, refunds, and payouts already recorded by Stripe.",
+    input("Input for listing Stripe balance transactions.", {
+      ...paginationInput,
+      currency: s.string({
+        minLength: 3,
+        maxLength: 3,
+        description: "Filter transactions by three-letter ISO currency code in lowercase.",
+      }),
+      type: s.string({ description: "Filter by Stripe balance transaction type, such as charge, refund, or payout." }),
+      payout: stripeId("Filter transactions included in this Stripe payout ID."),
+      source: stripeId("Filter transactions by their source ID, such as a charge ID."),
+      created: createdFilter,
+    }),
+    output("Stripe balance transactions page.", { balanceTransactions: rawStripeList }),
+  ),
+  action(
+    "list_charges",
+    "read",
+    "List Stripe charges. This does not create a charge or move money.",
+    input("Input for listing Stripe charges.", {
+      ...paginationInput,
+      customer: stripeId("Filter charges by Stripe customer ID."),
+      payment_intent: stripeId("Filter charges by Stripe payment intent ID."),
+      created: createdFilter,
+    }),
+    output("Stripe charges page.", { charges: rawStripeList }),
+  ),
+  action(
     "create_payment_link",
     "write",
     "Create a single-use Stripe payment link for one exact amount. Creating the link charges nobody; sending it to a payer is a separate, approved step.",
@@ -474,6 +531,10 @@ export type StripeActionName =
   | "search_prices"
   | "list_invoices"
   | "get_invoice"
+  | "search_invoices"
+  | "get_balance"
+  | "list_balance_transactions"
+  | "list_charges"
   | "create_payment_link";
 
 export const stripeActions: ActionDefinition[] = actions.map((source) =>

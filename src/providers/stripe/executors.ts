@@ -124,6 +124,18 @@ export const stripeActionHandlers: ProviderActionHandlers<"stripe", StripeAction
   get_invoice(input, context) {
     return executeInvoiceRead(`/v1/invoices/${encodeStripePath(input.invoiceId, "invoiceId")}`, context);
   },
+  search_invoices(input, context) {
+    return executeStripeList("/v1/invoices/search", "invoices", input, context);
+  },
+  get_balance(_input, context) {
+    return executeBalance(context);
+  },
+  list_balance_transactions(input, context) {
+    return executeStripeList("/v1/balance_transactions", "balanceTransactions", input, context);
+  },
+  list_charges(input, context) {
+    return executeStripeList("/v1/charges", "charges", input, context);
+  },
   create_payment_link(input, context) {
     return executeCreatePaymentLink(input, context);
   },
@@ -266,6 +278,22 @@ async function executePriceRead(path: string, context: StripeActionContext) {
   return { price: optionalRecord(price) ?? null };
 }
 
+async function executeBalance(context: StripeActionContext) {
+  const balance = requiredResponseRecord(
+    await stripeRequest("/v1/balance", {
+      apiKey: context.apiKey,
+      fetcher: context.fetcher,
+      method: "GET",
+    }),
+    "stripe balance response",
+  );
+  return {
+    balance,
+    available: Array.isArray(balance.available) ? balance.available : [],
+    pending: Array.isArray(balance.pending) ? balance.pending : [],
+  };
+}
+
 async function executeInvoiceRead(path: string, context: StripeActionContext) {
   const invoice = await stripeRequest(path, {
     apiKey: context.apiKey,
@@ -346,7 +374,7 @@ async function executeCreatePaymentLink(input: Record<string, unknown>, context:
 
 async function executeStripeList(
   path: string,
-  outputKey: "customers" | "products" | "prices" | "invoices",
+  outputKey: "customers" | "products" | "prices" | "invoices" | "balanceTransactions" | "charges",
   input: Record<string, unknown>,
   context: StripeActionContext,
 ) {
