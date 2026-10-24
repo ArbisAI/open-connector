@@ -10,6 +10,31 @@ const credential = {
   metadata: { scope: "openid email https://www.googleapis.com/auth/gmail.readonly" },
 } as Extract<ResolvedCredential, { authType: "oauth2" }>;
 describe("Google ownership evidence", () => {
+  it.each([
+    [
+      "openid email https://www.googleapis.com/auth/calendar.readonly",
+      ["openid", "email", "https://www.googleapis.com/auth/calendar.readonly"],
+    ],
+    [
+      "openid email https://www.googleapis.com/auth/calendar.events.owned",
+      ["openid", "email", "https://www.googleapis.com/auth/calendar.events.owned"],
+    ],
+    ["", []],
+    [undefined, []],
+  ])("advertises only provider-reported scopes for %s", async (scope, expected) => {
+    const profile = await googleProfile(
+      {
+        ...credential,
+        profile: { ...credential.profile, grantedScopes: ["https://www.googleapis.com/auth/calendar.events"] },
+        metadata: { scope },
+      },
+      {
+        fetcher: async () => Response.json({ sub: "google-123", email: "employee@acme.test", email_verified: true }),
+      },
+    );
+    expect(profile.grantedScopes).toEqual(expected);
+  });
+
   it("retains verified subject and hosted domain without reading Google work content", async () => {
     const calls: string[] = [];
     const profile = await googleProfile(credential, {
