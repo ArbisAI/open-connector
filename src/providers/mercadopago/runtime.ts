@@ -295,6 +295,99 @@ export function normalizeSubscriptionInvoice(
   };
 }
 
+export interface NormalizedCheckoutOrder {
+  id: string;
+  status: string;
+  statusDetail: string | null;
+  awaitingPayment: boolean;
+  awaitingCapture: boolean;
+  paid: boolean;
+  totalAmount: string | null;
+  paidAmount: string | null;
+  currency: string | null;
+  externalReference: string | null;
+  paymentMethodId: string | null;
+  paymentMethodType: string | null;
+  ticketUrl: string | null;
+  reference: string | null;
+  barcodeContent: string | null;
+  dateCreated: string | null;
+  raw: Record<string, unknown>;
+}
+
+/**
+ * Orders API order. waiting_payment and waiting_transfer are not paid.
+ * A merchant order from Checkout Pro uses normalizeMerchantOrder instead.
+ */
+export function normalizeCheckoutOrder(value: unknown): NormalizedCheckoutOrder {
+  const raw = asRecord(value, "order");
+  const status = optionalString(raw.status) ?? "created";
+  const statusDetail = optionalString(raw.status_detail) ?? null;
+  const payments = Array.isArray(optionalRecord(raw.transactions)?.payments)
+    ? (optionalRecord(raw.transactions)?.payments as unknown[])
+    : [];
+  const first = optionalRecord(payments[0]) ?? {};
+  const method = optionalRecord(first.payment_method) ?? {};
+  const detail = statusDetail ?? optionalString(first.status_detail);
+  return {
+    id: String(raw.id ?? ""),
+    status,
+    statusDetail,
+    awaitingPayment: detail === "waiting_payment" || detail === "waiting_transfer",
+    awaitingCapture: detail === "waiting_capture" || statusDetail === "waiting_capture",
+    paid: detail === "accredited" || statusDetail === "accredited",
+    totalAmount: moneyString(raw.total_amount),
+    paidAmount: moneyString(raw.total_paid_amount ?? first.paid_amount),
+    currency: optionalString(raw.country_code) ?? null,
+    externalReference: optionalString(raw.external_reference) ?? null,
+    paymentMethodId: optionalString(method.id) ?? null,
+    paymentMethodType: optionalString(method.type) ?? null,
+    ticketUrl: optionalString(method.ticket_url) ?? null,
+    reference: optionalString(method.reference) ?? null,
+    barcodeContent: optionalString(method.barcode_content) ?? null,
+    dateCreated: optionalString(raw.created_date) ?? null,
+    raw,
+  };
+}
+
+const offlineMethods = {
+  oxxo: { id: "oxxo", type: "ticket", expiration: "P3D" },
+  spei: { id: "clabe", type: "bank_transfer", expiration: "P1D" },
+} as const;
+
+/**
+ * OXXO and SPEI only. Card method ids are refused before any request.
+ */
+export function offlineOrderBody(input: Record<string, unknown>): { body: Record<string, unknown>; methodId: string } {
+  const method = optionalString(input.method);
+  const spec = method ? offlineMethods[method as keyof typeof offlineMethods] : undefined;
+  if (!spec) {
+    throw new ProviderRequestError(400, "create_offline_payment accepts oxxo or spei. Card charges are not available.");
+  }
+  const amount = decimalAmount(input.amount, "amount");
+  const reference = optionalString(input.externalReference) ?? optionalString(input.idempotencyKey);
+  return {
+    methodId: spec.id,
+    body: compactBody({
+      type: "online",
+      processing_mode: "automatic",
+      total_amount: amount,
+      external_reference: reference,
+      description: input.description,
+      payer: compactBody({ email: input.payerEmail }),
+      transactions: {
+        payments: [
+          {
+            amount,
+            expiration_time: optionalString(input.expiration) ?? spec.expiration,
+            payment_method: { id: spec.id, type: spec.type },
+          },
+        ],
+      },
+    }),
+  };
+}
+
 export function normalizeRefund(value: unknown): {
   refundId: string;
   paymentId: string;
@@ -347,7 +440,8 @@ export function parseSettlementCsv(csv: string): Array<{
   const lines = csv.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length < 2) return [];
   const header = splitCsv(lines[0] ?? "").map((cell) => cell.trim().toUpperCase());
-  const index = (names: string[]): number => names.map((name) => header.indexOf(name)).find((found) => found >= 0) ?? -1;
+  const index = (names: string[]): number =>
+    names.map((name) => header.indexOf(name)).find((found) => found >= 0) ?? -1;
   const date = index(["SETTLEMENT_DATE", "TRANSACTION_DATE", "DATE"]);
   const type = index(["TRANSACTION_TYPE", "RECORD_TYPE"]);
   const gross = index(["TRANSACTION_AMOUNT", "GROSS_AMOUNT"]);

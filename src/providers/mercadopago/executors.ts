@@ -2,10 +2,10 @@ import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } f
 import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
 import type { PollDefinition } from "../../triggers/common/poll.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { MercadoPagoContext, NormalizedPayment } from "./runtime.ts";
 
 import { optionalRecord, optionalString } from "../../core/cast.ts";
 import { ProviderRequestError, defineBearerProviderExecutors, defineProviderProxy } from "../provider-runtime.ts";
-import { mercadoPagoEvent } from "./trigger-on-event.ts";
 import {
   asRecord,
   autoRecurringBody,
@@ -17,17 +17,18 @@ import {
   mercadoPagoApiBaseUrl,
   mercadoPagoRequest,
   moneyString,
+  normalizeCheckoutOrder,
   normalizeMerchantOrder,
   normalizePayment,
   normalizeRefund,
+  offlineOrderBody,
   normalizeSubscriptionInvoice,
   pagingOf,
   parseSettlementCsv,
   requireId,
   resultList,
-  type MercadoPagoContext,
-  type NormalizedPayment,
 } from "./runtime.ts";
+import { mercadoPagoEvent } from "./trigger-on-event.ts";
 
 const service = "mercadopago";
 
@@ -53,7 +54,12 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
     return mutateCustomer("POST", "/v1/customers", input, context);
   },
   update_customer(input, context) {
-    return mutateCustomer("PUT", `/v1/customers/${requireId(input.customerId, "customerId")}`, omit(input, ["customerId"]), context);
+    return mutateCustomer(
+      "PUT",
+      `/v1/customers/${requireId(input.customerId, "customerId")}`,
+      omit(input, ["customerId"]),
+      context,
+    );
   },
   get_customer(input, context) {
     return readCustomer(`/v1/customers/${requireId(input.customerId, "customerId")}`, context);
@@ -66,7 +72,10 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
   },
   async delete_customer(input, context) {
     const id = String(input.customerId ?? "");
-    await mercadoPagoRequest(context, { method: "DELETE", path: `/v1/customers/${requireId(id, "customerId")}/delete` });
+    await mercadoPagoRequest(context, {
+      method: "DELETE",
+      path: `/v1/customers/${requireId(id, "customerId")}/delete`,
+    });
     return { deleted: true, id };
   },
   create_plan(input, context) {
@@ -87,7 +96,12 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
     return { plan };
   },
   async get_plan(input, context) {
-    return { plan: await mercadoPagoRequest(context, { method: "GET", path: `/preapproval_plan/${requireId(input.planId, "planId")}` }) };
+    return {
+      plan: await mercadoPagoRequest(context, {
+        method: "GET",
+        path: `/preapproval_plan/${requireId(input.planId, "planId")}`,
+      }),
+    };
   },
   search_plans(input, context) {
     return searchPlans(input, context);
@@ -99,7 +113,14 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
     return searchPayments(input, context);
   },
   async get_merchant_order(input, context) {
-    return { order: normalizeMerchantOrder(await mercadoPagoRequest(context, { method: "GET", path: `/merchant_orders/${requireId(input.orderId, "orderId")}` })) };
+    return {
+      order: normalizeMerchantOrder(
+        await mercadoPagoRequest(context, {
+          method: "GET",
+          path: `/merchant_orders/${requireId(input.orderId, "orderId")}`,
+        }),
+      ),
+    };
   },
   search_merchant_orders(input, context) {
     return searchOrders(input, context, false);
@@ -118,7 +139,10 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
   },
   async get_payment_link(input, context) {
     const raw = asRecord(
-      await mercadoPagoRequest(context, { method: "GET", path: `/checkout/preferences/${requireId(input.paymentLinkId, "paymentLinkId")}` }),
+      await mercadoPagoRequest(context, {
+        method: "GET",
+        path: `/checkout/preferences/${requireId(input.paymentLinkId, "paymentLinkId")}`,
+      }),
       "preference",
     );
     return preferenceLink(raw);
@@ -139,7 +163,10 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
   },
   async get_subscription(input, context) {
     return {
-      subscription: await mercadoPagoRequest(context, { method: "GET", path: `/preapproval/${requireId(input.subscriptionId, "subscriptionId")}` }),
+      subscription: await mercadoPagoRequest(context, {
+        method: "GET",
+        path: `/preapproval/${requireId(input.subscriptionId, "subscriptionId")}`,
+      }),
     };
   },
   async update_subscription(input, context) {
@@ -164,7 +191,10 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
     return setSubscriptionStatus(input, "cancelled", context);
   },
   async list_refunds(input, context) {
-    const payload = await mercadoPagoRequest(context, { method: "GET", path: `/v1/payments/${requireId(input.paymentId, "paymentId")}/refunds` });
+    const payload = await mercadoPagoRequest(context, {
+      method: "GET",
+      path: `/v1/payments/${requireId(input.paymentId, "paymentId")}/refunds`,
+    });
     return { refunds: Array.isArray(payload) ? payload : resultList(payload) };
   },
   async get_refund(input, context) {
@@ -176,6 +206,42 @@ export const mercadoPagoActionHandlers: ProviderActionHandlers<"mercadopago", Ha
   },
   create_refund(input, context) {
     return createRefund(input, context);
+  },
+  list_payment_methods(_input, context) {
+    return listPaymentMethods(context);
+  },
+  get_installments(input, context) {
+    return readInstallments(input, context);
+  },
+  list_identification_types(_input, context) {
+    return listIdentificationTypes(context);
+  },
+  create_offline_payment(input, context) {
+    return createOfflinePayment(input, context);
+  },
+  async get_order(input, context) {
+    return { order: await fetchCheckoutOrder(String(input.orderId ?? ""), context) };
+  },
+  search_orders(input, context) {
+    return searchCheckoutOrders(input, context);
+  },
+  async cancel_order(input, context) {
+    return { order: await postOrderAction(input, "cancel", context) };
+  },
+  async capture_order(input, context) {
+    return { order: await postOrderAction(input, "capture", context) };
+  },
+  refund_order(input, context) {
+    return refundOrder(input, context);
+  },
+  get_chargeback(input, context) {
+    return readChargeback(input, context);
+  },
+  search_claims(input, context) {
+    return searchClaims(input, context);
+  },
+  get_claim(input, context) {
+    return readClaim(input, context);
   },
 };
 
@@ -217,7 +283,10 @@ async function validateAccount(accessToken: string, fetcher: typeof fetch) {
   }
   const siteId = optionalString(payload.site_id) ?? "";
   if (siteId !== "MLM") {
-    throw new ProviderRequestError(400, `This connector is for Mercado Pago Mexico (MLM). The token belongs to ${siteId || "an unknown site"}.`);
+    throw new ProviderRequestError(
+      400,
+      `This connector is for Mercado Pago Mexico (MLM). The token belongs to ${siteId || "an unknown site"}.`,
+    );
   }
   const id = payload.id == null ? "" : String(payload.id);
   const email = optionalString(payload.email);
@@ -239,7 +308,10 @@ async function identify(context: MercadoPagoContext) {
   );
   const siteId = optionalString(payload.site_id) ?? "";
   if (siteId !== "MLM") {
-    throw new ProviderRequestError(400, `This connector is for Mercado Pago Mexico (MLM). The account site is ${siteId || "unknown"}.`);
+    throw new ProviderRequestError(
+      400,
+      `This connector is for Mercado Pago Mexico (MLM). The account site is ${siteId || "unknown"}.`,
+    );
   }
   return {
     accountId: String(payload.id ?? ""),
@@ -315,7 +387,11 @@ async function listSettlementRows(input: Record<string, unknown>, context: Merca
   };
 }
 
-async function createReport(kind: "release" | "settlement", input: Record<string, unknown>, context: MercadoPagoContext) {
+async function createReport(
+  kind: "release" | "settlement",
+  input: Record<string, unknown>,
+  context: MercadoPagoContext,
+) {
   const created = asRecord(
     await mercadoPagoRequest(context, {
       method: "POST",
@@ -333,13 +409,25 @@ async function readReportTask(input: Record<string, unknown>, context: MercadoPa
     method: "GET",
     path: `/v1/account/${family}/task/${requireId(input.taskId, "taskId")}`,
   });
-  const task = Array.isArray(taskPayload) ? optionalRecord(taskPayload[0]) ?? {} : asRecord(taskPayload, "report task");
+  const task = Array.isArray(taskPayload)
+    ? (optionalRecord(taskPayload[0]) ?? {})
+    : asRecord(taskPayload, "report task");
   const status = optionalString(task.status) ?? null;
   const fileName = optionalString(task.file_name) ?? null;
-  return { taskId: String(task.id ?? input.taskId), status, ready: Boolean(fileName) || status === "processed", fileName };
+  return {
+    taskId: String(task.id ?? input.taskId),
+    status,
+    ready: Boolean(fileName) || status === "processed",
+    fileName,
+  };
 }
 
-async function mutateCustomer(method: "POST" | "PUT", path: string, input: Record<string, unknown>, context: MercadoPagoContext) {
+async function mutateCustomer(
+  method: "POST" | "PUT",
+  path: string,
+  input: Record<string, unknown>,
+  context: MercadoPagoContext,
+) {
   const customer = await mercadoPagoRequest(context, { method, path, body: customerBody(input) });
   return { customer };
 }
@@ -438,7 +526,9 @@ async function searchOrders(input: Record<string, unknown>, context: MercadoPago
       offset: input.offset,
     },
   });
-  const orders = resultList(payload).map((item) => normalizeMerchantOrder(item)).filter((order) => !openOnly || order.open);
+  const orders = resultList(payload)
+    .map((item) => normalizeMerchantOrder(item))
+    .filter((order) => !openOnly || order.open);
   return { orders, paging: pagingOf(payload) };
 }
 
@@ -497,7 +587,9 @@ async function createPaymentLink(input: Record<string, unknown>, context: Mercad
       path: "/checkout/preferences",
       idempotencyKey: String(input.idempotencyKey ?? ""),
       body: compactBody({
-        items: [{ title: description, quantity: 1, currency_id: currency, unit_price: decimalNumber(amount, "amount") }],
+        items: [
+          { title: description, quantity: 1, currency_id: currency, unit_price: decimalNumber(amount, "amount") },
+        ],
         payer: input.payerEmail ? { email: input.payerEmail } : undefined,
         external_reference: reference,
         metadata: input.metadata,
@@ -516,7 +608,10 @@ function assertSameLink(preference: Record<string, unknown>, amount: string, des
   const sameAmount = moneyString(item.unit_price) === amount;
   const sameTitle = optionalString(item.title) === description;
   if (!sameAmount || !sameTitle) {
-    throw new ProviderRequestError(409, "A payment link with this idempotency key already exists for a different amount or description.");
+    throw new ProviderRequestError(
+      409,
+      "A payment link with this idempotency key already exists for a different amount or description.",
+    );
   }
 }
 
@@ -611,7 +706,11 @@ async function searchSubscriptions(input: Record<string, unknown>, context: Merc
   return { subscriptions: resultList(payload), paging: pagingOf(payload) };
 }
 
-async function setSubscriptionStatus(input: Record<string, unknown>, status: "paused" | "cancelled", context: MercadoPagoContext) {
+async function setSubscriptionStatus(
+  input: Record<string, unknown>,
+  status: "paused" | "cancelled",
+  context: MercadoPagoContext,
+) {
   const raw = asRecord(
     await mercadoPagoRequest(context, {
       method: "PUT",
@@ -621,6 +720,228 @@ async function setSubscriptionStatus(input: Record<string, unknown>, status: "pa
     "subscription",
   );
   return { subscriptionId: String(raw.id ?? input.subscriptionId), status: optionalString(raw.status) ?? status };
+}
+
+async function listPaymentMethods(context: MercadoPagoContext) {
+  const payload = await mercadoPagoRequest(context, { method: "GET", path: "/v1/payment_methods" });
+  const paymentMethods = (Array.isArray(payload) ? payload : resultList(payload)).map((item) => {
+    const raw = optionalRecord(item) ?? {};
+    return {
+      id: String(raw.id ?? ""),
+      name: optionalString(raw.name) ?? null,
+      paymentTypeId: optionalString(raw.payment_type_id) ?? null,
+      status: optionalString(raw.status) ?? null,
+      minAllowedAmount: moneyString(raw.min_allowed_amount),
+      maxAllowedAmount: moneyString(raw.max_allowed_amount),
+      deferredCapture: optionalString(raw.deferred_capture) ?? null,
+    };
+  });
+  return { paymentMethods };
+}
+
+async function readInstallments(input: Record<string, unknown>, context: MercadoPagoContext) {
+  const payload = await mercadoPagoRequest(context, {
+    method: "GET",
+    path: "/v1/payment_methods/installments",
+    query: {
+      payment_method_id: input.paymentMethodId,
+      amount: decimalNumber(input.amount, "amount"),
+      bin: input.bin,
+      issuer_id: input.issuerId,
+    },
+  });
+  const plans = (Array.isArray(payload) ? payload : []).map((item) => {
+    const raw = optionalRecord(item) ?? {};
+    const issuer = optionalRecord(raw.issuer) ?? {};
+    const costs = Array.isArray(raw.payer_costs) ? raw.payer_costs : [];
+    return {
+      paymentMethodId: optionalString(raw.payment_method_id) ?? null,
+      paymentTypeId: optionalString(raw.payment_type_id) ?? null,
+      issuerName: optionalString(issuer.name) ?? null,
+      payerCosts: costs.map((cost) => {
+        const row = optionalRecord(cost) ?? {};
+        return {
+          installments: typeof row.installments === "number" ? row.installments : 0,
+          installmentRate: typeof row.installment_rate === "number" ? row.installment_rate : null,
+          installmentAmount: moneyString(row.installment_amount),
+          totalAmount: moneyString(row.total_amount),
+          labels: Array.isArray(row.labels)
+            ? row.labels.filter((label): label is string => typeof label === "string")
+            : [],
+        };
+      }),
+    };
+  });
+  return { plans };
+}
+
+async function listIdentificationTypes(context: MercadoPagoContext) {
+  const payload = await mercadoPagoRequest(context, { method: "GET", path: "/v1/identification_types" });
+  const identificationTypes = (Array.isArray(payload) ? payload : []).map((item) => {
+    const raw = optionalRecord(item) ?? {};
+    return {
+      id: String(raw.id ?? ""),
+      name: optionalString(raw.name) ?? null,
+      type: optionalString(raw.type) ?? null,
+      minLength: typeof raw.min_length === "number" ? raw.min_length : null,
+      maxLength: typeof raw.max_length === "number" ? raw.max_length : null,
+    };
+  });
+  return { identificationTypes };
+}
+
+async function createOfflinePayment(input: Record<string, unknown>, context: MercadoPagoContext) {
+  const { body } = offlineOrderBody(input);
+  const created = await mercadoPagoRequest(context, {
+    method: "POST",
+    path: "/v1/orders",
+    body,
+    idempotencyKey: String(input.idempotencyKey ?? ""),
+  });
+  return { order: normalizeCheckoutOrder(created) };
+}
+
+async function fetchCheckoutOrder(orderId: string, context: MercadoPagoContext) {
+  return normalizeCheckoutOrder(
+    await mercadoPagoRequest(context, { method: "GET", path: `/v1/orders/${requireId(orderId, "orderId")}` }),
+  );
+}
+
+async function searchCheckoutOrders(input: Record<string, unknown>, context: MercadoPagoContext) {
+  const payload = await mercadoPagoRequest(context, {
+    method: "GET",
+    path: "/v1/orders",
+    query: {
+      begin_date: input.beginDate,
+      end_date: input.endDate,
+      external_reference: input.externalReference,
+      status: input.status,
+      limit: input.limit,
+      offset: input.offset,
+    },
+  });
+  return {
+    orders: resultList(payload).map((item) => normalizeCheckoutOrder(item)),
+    paging: pagingOf(payload),
+  };
+}
+
+async function refundOrder(input: Record<string, unknown>, context: MercadoPagoContext) {
+  const transactionId = optionalString(input.transactionId);
+  const amount = input.amount === undefined ? undefined : decimalAmount(input.amount, "amount");
+  if (Boolean(transactionId) !== (amount !== undefined)) {
+    throw new ProviderRequestError(
+      400,
+      "A partial order refund needs both transactionId and amount. Omit both for a full refund.",
+    );
+  }
+  const body = transactionId ? { transactions: [{ id: transactionId, amount }] } : {};
+  return {
+    order: normalizeCheckoutOrder(
+      await mercadoPagoRequest(context, {
+        method: "POST",
+        path: `/v1/orders/${requireId(input.orderId, "orderId")}/refund`,
+        body,
+        idempotencyKey: String(input.idempotencyKey ?? ""),
+      }),
+    ),
+  };
+}
+
+async function postOrderAction(
+  input: Record<string, unknown>,
+  action: "cancel" | "capture",
+  context: MercadoPagoContext,
+) {
+  return normalizeCheckoutOrder(
+    await mercadoPagoRequest(context, {
+      method: "POST",
+      path: `/v1/orders/${requireId(input.orderId, "orderId")}/${action}`,
+      idempotencyKey: String(input.idempotencyKey ?? ""),
+    }),
+  );
+}
+
+async function readChargeback(input: Record<string, unknown>, context: MercadoPagoContext) {
+  const raw = asRecord(
+    await mercadoPagoRequest(context, {
+      method: "GET",
+      path: `/v1/chargebacks/${requireId(input.chargebackId, "chargebackId")}`,
+    }),
+    "chargeback",
+  );
+  const payments = Array.isArray(raw.payments) ? raw.payments : [];
+  return {
+    chargeback: {
+      id: String(raw.id ?? ""),
+      amount: moneyString(raw.amount),
+      currency: optionalString(raw.currency) ?? null,
+      documentationRequired: typeof raw.documentation_required === "boolean" ? raw.documentation_required : null,
+      documentationStatus: optionalString(raw.documentation_status) ?? null,
+      documentationDeadline: optionalString(raw.date_documentation_deadline) ?? null,
+      coverageApplied: typeof raw.coverage_applied === "boolean" ? raw.coverage_applied : null,
+      dateCreated: optionalString(raw.date_created) ?? null,
+      paymentIds: payments
+        .map((item) => {
+          const row = optionalRecord(item);
+          return row?.id == null ? null : String(row.id);
+        })
+        .filter((id): id is string => Boolean(id)),
+      raw,
+    },
+  };
+}
+
+async function searchClaims(input: Record<string, unknown>, context: MercadoPagoContext) {
+  const payload = await mercadoPagoRequest(context, {
+    method: "GET",
+    path: "/post-purchase/v1/claims/search",
+    query: {
+      type: input.type,
+      stage: input.stage,
+      status: input.status,
+      limit: input.limit,
+      offset: input.offset,
+    },
+  });
+  return { claims: resultList(payload).map((item) => normalizeClaim(item)), paging: pagingOf(payload) };
+}
+
+async function readClaim(input: Record<string, unknown>, context: MercadoPagoContext) {
+  const claimId = requireId(input.claimId, "claimId");
+  const claim = normalizeClaim(
+    await mercadoPagoRequest(context, { method: "GET", path: `/post-purchase/v1/claims/${claimId}` }),
+  );
+  const messagesPayload = await mercadoPagoRequest(context, {
+    method: "GET",
+    path: `/post-purchase/v1/claims/${claimId}/messages`,
+  });
+  const messages = (Array.isArray(messagesPayload) ? messagesPayload : resultList(messagesPayload)).map((item) => {
+    const raw = optionalRecord(item) ?? {};
+    const from = optionalRecord(raw.from) ?? {};
+    return {
+      id: raw.id == null ? null : String(raw.id),
+      dateCreated: optionalString(raw.date_created) ?? null,
+      role: optionalString(from.role) ?? null,
+      message: optionalString(raw.message) ?? null,
+    };
+  });
+  return { claim, messages };
+}
+
+function normalizeClaim(value: unknown) {
+  const raw = asRecord(value, "claim");
+  return {
+    id: String(raw.id ?? ""),
+    type: optionalString(raw.type) ?? null,
+    stage: optionalString(raw.stage) ?? null,
+    status: optionalString(raw.status) ?? null,
+    resource: optionalString(raw.resource) ?? null,
+    reasonId: optionalString(raw.reason_id) ?? null,
+    dateCreated: optionalString(raw.date_created) ?? null,
+    lastUpdated: optionalString(raw.last_updated) ?? null,
+    raw,
+  };
 }
 
 async function createRefund(input: Record<string, unknown>, context: MercadoPagoContext) {

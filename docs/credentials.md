@@ -429,7 +429,6 @@ Action policy entries are comma-separated action ids. A provider-wide wildcard s
 matches all actions for that provider, and a bare `*` matches every action. Proxy policy entries are
 comma-separated provider service names, or `*` for all provider proxies.
 
-
 ## Restoring connections with application references
 
 Applications may retain an opaque connection ID in a separate database. Preserve the connection record, encrypted credential value, required encryption configuration and referenced ID together when restoring the same deployment. Restoring only the application's reference does not restore credentials or consent. A database copy with sanitized/disabled credential placeholders cannot execute provider actions.

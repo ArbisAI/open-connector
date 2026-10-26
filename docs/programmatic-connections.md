@@ -268,7 +268,6 @@ API-key creation and replacement, validation failure, concurrent replacement, di
 request tracking, and management-token enforcement. Provider-specific acceptance still needs a
 real provider account and must verify the scopes and resources available to that credential.
 
-
 ## Application database migrations
 
 Treat returned account and authorization-request IDs as opaque persistent references. Migrating a calling application's workspace or user records does not create provider consent or authorize another user to use an existing account. Preserve the reference and its owner/revision in that application, then inspect/reconnect the exact account through the normal API. An unresolved personal reference must not be replaced with an unrelated shared account.

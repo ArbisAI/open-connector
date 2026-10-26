@@ -25,7 +25,8 @@ function createFetcher(routes: Record<string, Route>): { fetcher: ProviderFetch;
     const headers = Object.fromEntries(
       Object.entries((init?.headers ?? {}) as Record<string, string>).map(([key, value]) => [key.toLowerCase(), value]),
     );
-    const json = typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+    const json =
+      typeof init?.body === "string" && init.body ? (JSON.parse(init.body) as Record<string, unknown>) : null;
     const request: RecordedRequest = {
       url: url.toString(),
       method: init?.method ?? "GET",
@@ -85,7 +86,9 @@ describe("credential validator", () => {
     const argentina = createFetcher({
       "GET https://api.mercadolibre.com/users/me": () => ({ body: { ...me, site_id: "MLA" } }),
     });
-    await expect(credentialValidators.apiKey!({ apiKey: token, values: {} }, { fetcher: argentina.fetcher })).rejects.toMatchObject({
+    await expect(
+      credentialValidators.apiKey!({ apiKey: token, values: {} }, { fetcher: argentina.fetcher }),
+    ).rejects.toMatchObject({
       status: 400,
     });
     expect(argentina.requests).toHaveLength(1);
@@ -176,7 +179,9 @@ describe("settlement rows", () => {
     );
     expect(result).toMatchObject({
       ready: true,
-      transactions: [{ sourceId: "99", type: "SETTLEMENT", gross: "1250.50", fee: "25.00", net: "1225.50", currency: "MXN" }],
+      transactions: [
+        { sourceId: "99", type: "SETTLEMENT", gross: "1250.50", fee: "25.00", net: "1225.50", currency: "MXN" },
+      ],
     });
   });
 });
@@ -215,7 +220,10 @@ describe("customers", () => {
       }),
     });
     await expect(
-      mercadoPagoActionHandlers.create_customer({ email: "ana@example.mx" }, { accessToken: token, fetcher: failed.fetcher }),
+      mercadoPagoActionHandlers.create_customer(
+        { email: "ana@example.mx" },
+        { accessToken: token, fetcher: failed.fetcher },
+      ),
     ).rejects.toThrow(/email already exists/);
   });
 
@@ -225,9 +233,18 @@ describe("customers", () => {
       "GET https://api.mercadopago.com/v1/customers/cus-9": () => ({ body: { id: "cus-9" } }),
       "DELETE https://api.mercadopago.com/v1/customers/cus-9/delete": () => ({ body: {} }),
     });
-    await mercadoPagoActionHandlers.update_customer({ customerId: "cus-9", first_name: "Ana" }, { accessToken: token, fetcher: routes.fetcher });
-    await mercadoPagoActionHandlers.get_customer({ customerId: "cus-9" }, { accessToken: token, fetcher: routes.fetcher });
-    await mercadoPagoActionHandlers.delete_customer({ customerId: "cus-9" }, { accessToken: token, fetcher: routes.fetcher });
+    await mercadoPagoActionHandlers.update_customer(
+      { customerId: "cus-9", first_name: "Ana" },
+      { accessToken: token, fetcher: routes.fetcher },
+    );
+    await mercadoPagoActionHandlers.get_customer(
+      { customerId: "cus-9" },
+      { accessToken: token, fetcher: routes.fetcher },
+    );
+    await mercadoPagoActionHandlers.delete_customer(
+      { customerId: "cus-9" },
+      { accessToken: token, fetcher: routes.fetcher },
+    );
     expect(routes.requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
       "PUT /v1/customers/cus-9",
       "GET /v1/customers/cus-9",
@@ -261,7 +278,14 @@ describe("payments", () => {
     });
     const result = await mercadoPagoActionHandlers.get_payment({ paymentId: "555" }, { accessToken, fetcher });
     expect(result).toMatchObject({
-      payment: { id: "555", status: "approved", paid: true, pending: false, transactionAmount: "1250.50", currency: "MXN" },
+      payment: {
+        id: "555",
+        status: "approved",
+        paid: true,
+        pending: false,
+        transactionAmount: "1250.50",
+        currency: "MXN",
+      },
     });
   });
 
@@ -280,9 +304,17 @@ describe("payments", () => {
         },
       }),
     });
-    const oxxoResult = await mercadoPagoActionHandlers.get_payment({ paymentId: "1" }, { accessToken: token, fetcher: oxxo.fetcher });
+    const oxxoResult = await mercadoPagoActionHandlers.get_payment(
+      { paymentId: "1" },
+      { accessToken: token, fetcher: oxxo.fetcher },
+    );
     expect(oxxoResult).toMatchObject({
-      payment: { paid: false, pending: true, ticketUrl: "https://www.mercadopago.com.mx/payments/1/ticket", paymentMethodId: "oxxo" },
+      payment: {
+        paid: false,
+        pending: true,
+        ticketUrl: "https://www.mercadopago.com.mx/payments/1/ticket",
+        paymentMethodId: "oxxo",
+      },
     });
 
     const spei = context({
@@ -297,21 +329,29 @@ describe("payments", () => {
         },
       }),
     });
-    const speiResult = await mercadoPagoActionHandlers.get_payment({ paymentId: "2" }, { accessToken: token, fetcher: spei.fetcher });
+    const speiResult = await mercadoPagoActionHandlers.get_payment(
+      { paymentId: "2" },
+      { accessToken: token, fetcher: spei.fetcher },
+    );
     expect(speiResult).toMatchObject({ payment: { paid: false, pending: true, paymentTypeId: "bank_transfer" } });
   });
 
-  it.each(["in_process", "rejected", "refunded", "charged_back"])("does not collapse %s into approved", async (status) => {
-    const { fetcher } = context({
-      "GET https://api.mercadopago.com/v1/payments/9": () => ({ body: { ...approvedCard, status } }),
-    });
-    const result = await mercadoPagoActionHandlers.get_payment({ paymentId: "9" }, { accessToken: token, fetcher });
-    expect(result).toMatchObject({ payment: { status, paid: false } });
-  });
+  it.each(["in_process", "rejected", "refunded", "charged_back"])(
+    "does not collapse %s into approved",
+    async (status) => {
+      const { fetcher } = context({
+        "GET https://api.mercadopago.com/v1/payments/9": () => ({ body: { ...approvedCard, status } }),
+      });
+      const result = await mercadoPagoActionHandlers.get_payment({ paymentId: "9" }, { accessToken: token, fetcher });
+      expect(result).toMatchObject({ payment: { status, paid: false } });
+    },
+  );
 
   it("fills required sort and forwards documented query names", async () => {
     const { fetcher, requests } = context({
-      "GET https://api.mercadopago.com/v1/payments/search": () => ({ body: { results: [], paging: { total: 0, limit: 0, offset: 0 } } }),
+      "GET https://api.mercadopago.com/v1/payments/search": () => ({
+        body: { results: [], paging: { total: 0, limit: 0, offset: 0 } },
+      }),
     });
     const result = await mercadoPagoActionHandlers.search_payments(
       { externalReference: "ref-1", beginDate: "NOW-7DAYS", endDate: "NOW", range: "date_created" },
@@ -324,9 +364,14 @@ describe("payments", () => {
     expect(requests[0]?.query.get("begin_date")).toBe("NOW-7DAYS");
 
     const custom = context({
-      "GET https://api.mercadopago.com/v1/payments/search": () => ({ body: { results: [], paging: { total: 0, limit: 0, offset: 0 } } }),
+      "GET https://api.mercadopago.com/v1/payments/search": () => ({
+        body: { results: [], paging: { total: 0, limit: 0, offset: 0 } },
+      }),
     });
-    await mercadoPagoActionHandlers.search_payments({ sort: "date_approved", criteria: "asc" }, { accessToken: token, fetcher: custom.fetcher });
+    await mercadoPagoActionHandlers.search_payments(
+      { sort: "date_approved", criteria: "asc" },
+      { accessToken: token, fetcher: custom.fetcher },
+    );
     expect(custom.requests[0]?.query.get("sort")).toBe("date_approved");
     expect(custom.requests[0]?.query.get("criteria")).toBe("asc");
   });
@@ -342,7 +387,9 @@ describe("payment links", () => {
 
   it("posts a decimal unit price and maps init_point", async () => {
     const { fetcher, requests } = context({
-      "GET https://api.mercadopago.com/checkout/preferences/search": () => ({ body: { elements: [], paging: { total: 0, limit: 1, offset: 0 } } }),
+      "GET https://api.mercadopago.com/checkout/preferences/search": () => ({
+        body: { elements: [], paging: { total: 0, limit: 1, offset: 0 } },
+      }),
       "POST https://api.mercadopago.com/checkout/preferences": () => ({
         body: {
           id: "pref-1",
@@ -370,7 +417,13 @@ describe("payment links", () => {
     const same = context({
       "GET https://api.mercadopago.com/checkout/preferences/search": () => ({
         body: {
-          elements: [{ id: "pref-1", init_point: "https://www.mercadopago.com.mx/checkout/start", items: [{ title: "Factura 0042", unit_price: 1250.5 }] }],
+          elements: [
+            {
+              id: "pref-1",
+              init_point: "https://www.mercadopago.com.mx/checkout/start",
+              items: [{ title: "Factura 0042", unit_price: 1250.5 }],
+            },
+          ],
         },
       }),
     });
@@ -379,12 +432,16 @@ describe("payment links", () => {
 
     const different = context({
       "GET https://api.mercadopago.com/checkout/preferences/search": () => ({
-        body: { elements: [{ id: "pref-1", init_point: "https://example.test", items: [{ title: "Factura 0042", unit_price: 10 }] }] },
+        body: {
+          elements: [
+            { id: "pref-1", init_point: "https://example.test", items: [{ title: "Factura 0042", unit_price: 10 }] },
+          ],
+        },
       }),
     });
-    await expect(mercadoPagoActionHandlers.create_payment_link(input, { accessToken: token, fetcher: different.fetcher })).rejects.toBeInstanceOf(
-      ProviderRequestError,
-    );
+    await expect(
+      mercadoPagoActionHandlers.create_payment_link(input, { accessToken: token, fetcher: different.fetcher }),
+    ).rejects.toBeInstanceOf(ProviderRequestError);
     expect(different.requests.some((request) => request.method === "POST")).toBe(false);
   });
 
@@ -418,7 +475,9 @@ describe("merchant orders and subscription invoices", () => {
         body: { id: 10, status: "opened", total_amount: 1250.5, paid_amount: 0, currency_id: "MXN" },
       }),
     });
-    await expect(mercadoPagoActionHandlers.get_merchant_order({ orderId: "10" }, { accessToken: token, fetcher })).resolves.toMatchObject({
+    await expect(
+      mercadoPagoActionHandlers.get_merchant_order({ orderId: "10" }, { accessToken: token, fetcher }),
+    ).resolves.toMatchObject({
       order: { open: true, amountDue: "1250.50", paidAmount: "0.00" },
     });
 
@@ -443,9 +502,14 @@ describe("merchant orders and subscription invoices", () => {
 
   it("maps a missing order to invalid input", async () => {
     const { fetcher } = context({
-      "GET https://api.mercadopago.com/merchant_orders/404": () => ({ status: 404, body: { message: "merchant order not found", status: 404 } }),
+      "GET https://api.mercadopago.com/merchant_orders/404": () => ({
+        status: 404,
+        body: { message: "merchant order not found", status: 404 },
+      }),
     });
-    await expect(mercadoPagoActionHandlers.get_merchant_order({ orderId: "404" }, { accessToken: token, fetcher })).rejects.toMatchObject({
+    await expect(
+      mercadoPagoActionHandlers.get_merchant_order({ orderId: "404" }, { accessToken: token, fetcher }),
+    ).rejects.toMatchObject({
       status: 400,
     });
   });
@@ -457,7 +521,10 @@ describe("merchant orders and subscription invoices", () => {
       }),
     });
     await expect(
-      mercadoPagoActionHandlers.get_subscription_invoice({ invoiceId: "7" }, { accessToken: token, fetcher: scheduled.fetcher }),
+      mercadoPagoActionHandlers.get_subscription_invoice(
+        { invoiceId: "7" },
+        { accessToken: token, fetcher: scheduled.fetcher },
+      ),
     ).resolves.toMatchObject({ invoice: { open: true, paid: false } });
 
     const processed = context({
@@ -467,7 +534,10 @@ describe("merchant orders and subscription invoices", () => {
       "GET https://api.mercadopago.com/v1/payments/555": () => ({ body: approvedCard }),
     });
     await expect(
-      mercadoPagoActionHandlers.get_subscription_invoice({ invoiceId: "8" }, { accessToken: token, fetcher: processed.fetcher }),
+      mercadoPagoActionHandlers.get_subscription_invoice(
+        { invoiceId: "8" },
+        { accessToken: token, fetcher: processed.fetcher },
+      ),
     ).resolves.toMatchObject({ invoice: { paid: true, open: false, paymentStatus: "approved" } });
 
     const waiting = context({
@@ -477,7 +547,10 @@ describe("merchant orders and subscription invoices", () => {
       "GET https://api.mercadopago.com/v1/payments/3": () => ({ body: { ...approvedCard, id: 3, status: "pending" } }),
     });
     await expect(
-      mercadoPagoActionHandlers.get_subscription_invoice({ invoiceId: "9" }, { accessToken: token, fetcher: waiting.fetcher }),
+      mercadoPagoActionHandlers.get_subscription_invoice(
+        { invoiceId: "9" },
+        { accessToken: token, fetcher: waiting.fetcher },
+      ),
     ).resolves.toMatchObject({ invoice: { paid: false, open: true, paymentStatus: "pending" } });
   });
 });
@@ -486,7 +559,12 @@ describe("plans and subscriptions", () => {
   it("posts decimal recurring terms and returns an authorization URL distinct from a checkout url", async () => {
     const plan = context({
       "POST https://api.mercadopago.com/preapproval_plan": (request) => ({
-        body: { id: "plan-1", status: "active", init_point: "https://www.mercadopago.com.mx/subscriptions/plan-1", echo: request.json },
+        body: {
+          id: "plan-1",
+          status: "active",
+          init_point: "https://www.mercadopago.com.mx/subscriptions/plan-1",
+          echo: request.json,
+        },
       }),
     });
     await mercadoPagoActionHandlers.create_plan(
@@ -515,7 +593,9 @@ describe("plans and subscriptions", () => {
 
   it("pauses and cancels by sending only status", async () => {
     const { fetcher, requests } = context({
-      "PUT https://api.mercadopago.com/preapproval/sub-1": (request) => ({ body: { id: "sub-1", status: request.json?.status } }),
+      "PUT https://api.mercadopago.com/preapproval/sub-1": (request) => ({
+        body: { id: "sub-1", status: request.json?.status },
+      }),
     });
     await mercadoPagoActionHandlers.pause_subscription({ subscriptionId: "sub-1" }, { accessToken: token, fetcher });
     await mercadoPagoActionHandlers.cancel_subscription({ subscriptionId: "sub-1" }, { accessToken: token, fetcher });
@@ -559,23 +639,379 @@ describe("errors", () => {
     const unauthorized = context({
       "GET https://api.mercadolibre.com/users/me": () => ({ status: 401, body: { message: `bad ${token}` } }),
     });
-    await expect(mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: unauthorized.fetcher })).rejects.toMatchObject({
+    await expect(
+      mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: unauthorized.fetcher }),
+    ).rejects.toMatchObject({
       status: 401,
     });
-    await expect(mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: unauthorized.fetcher })).rejects.not.toThrow(token);
+    await expect(
+      mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: unauthorized.fetcher }),
+    ).rejects.not.toThrow(token);
 
     const limited = context({
       "GET https://api.mercadolibre.com/users/me": () => ({ status: 429, body: { message: "too many" } }),
     });
-    await expect(mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: limited.fetcher })).rejects.toMatchObject({
+    await expect(
+      mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: limited.fetcher }),
+    ).rejects.toMatchObject({
       status: 429,
     });
 
     const down = context({
       "GET https://api.mercadolibre.com/users/me": () => ({ status: 500, body: "<html>down</html>" }),
     });
-    await expect(mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: down.fetcher })).rejects.toMatchObject({
+    await expect(
+      mercadoPagoActionHandlers.identify_account({}, { accessToken: token, fetcher: down.fetcher }),
+    ).rejects.toMatchObject({
       status: 502,
+    });
+  });
+});
+
+describe("offline orders", () => {
+  const oxxoOrder = {
+    id: "01ORDER",
+    status: "action_required",
+    status_detail: "waiting_payment",
+    total_amount: "500.00",
+    total_paid_amount: "0.00",
+    country_code: "MLM",
+    external_reference: "key-oxxo",
+    created_date: "2026-03-01T12:00:00.000-06:00",
+    transactions: {
+      payments: [
+        {
+          amount: "500.00",
+          payment_method: {
+            id: "oxxo",
+            type: "ticket",
+            ticket_url: "https://www.mercadopago.com.mx/payments/ticket/1",
+            barcode_content: "123456789",
+          },
+        },
+      ],
+    },
+  };
+
+  it("creates an OXXO order as unpaid and never sends a card token", async () => {
+    const { fetcher, requests, accessToken } = context({
+      "POST https://api.mercadopago.com/v1/orders": (request) => {
+        expect(request.headers["x-idempotency-key"]).toBe("key-oxxo");
+        expect(request.json).toEqual({
+          type: "online",
+          processing_mode: "automatic",
+          total_amount: "500.00",
+          external_reference: "key-oxxo",
+          payer: { email: "payer@example.mx" },
+          transactions: {
+            payments: [{ amount: "500.00", expiration_time: "P3D", payment_method: { id: "oxxo", type: "ticket" } }],
+          },
+        });
+        expect(JSON.stringify(request.json)).not.toContain("token");
+        return { status: 201, body: oxxoOrder };
+      },
+    });
+    const result = await mercadoPagoActionHandlers.create_offline_payment(
+      { method: "oxxo", amount: "500.00", payerEmail: "payer@example.mx", idempotencyKey: "key-oxxo" },
+      { accessToken, fetcher },
+    );
+    expect(result).toMatchObject({
+      order: {
+        id: "01ORDER",
+        awaitingPayment: true,
+        paid: false,
+        ticketUrl: "https://www.mercadopago.com.mx/payments/ticket/1",
+        barcodeContent: "123456789",
+        paymentMethodId: "oxxo",
+      },
+    });
+    expect(requests).toHaveLength(1);
+  });
+
+  it("creates a SPEI order and returns the CLABE as the reference", async () => {
+    const { fetcher, accessToken } = context({
+      "POST https://api.mercadopago.com/v1/orders": (request) => {
+        expect(request.json?.transactions).toEqual({
+          payments: [
+            { amount: "1000.00", expiration_time: "P1D", payment_method: { id: "clabe", type: "bank_transfer" } },
+          ],
+        });
+        return {
+          status: 201,
+          body: {
+            ...oxxoOrder,
+            total_amount: "1000.00",
+            status_detail: "waiting_transfer",
+            transactions: {
+              payments: [{ payment_method: { id: "clabe", type: "bank_transfer", reference: "646180123456789012" } }],
+            },
+          },
+        };
+      },
+    });
+    await expect(
+      mercadoPagoActionHandlers.create_offline_payment(
+        { method: "spei", amount: "1000.00", payerEmail: "payer@example.mx", idempotencyKey: "key-spei" },
+        { accessToken, fetcher },
+      ),
+    ).resolves.toMatchObject({
+      order: { awaitingPayment: true, paid: false, reference: "646180123456789012", paymentMethodId: "clabe" },
+    });
+  });
+
+  it("refuses a card method before any request", async () => {
+    const { fetcher, requests, accessToken } = context({});
+    await expect(
+      mercadoPagoActionHandlers.create_offline_payment(
+        { method: "visa", amount: "100.00", payerEmail: "payer@example.mx", idempotencyKey: "key-card" },
+        { accessToken, fetcher },
+      ),
+    ).rejects.toBeInstanceOf(ProviderRequestError);
+    expect(requests).toHaveLength(0);
+  });
+});
+
+describe("orders, capture, and disputes", () => {
+  it("searches orders with the required date range and does not treat waiting_payment as paid", async () => {
+    const { fetcher, requests, accessToken } = context({
+      "GET https://api.mercadopago.com/v1/orders": (request) => {
+        expect(request.query.get("begin_date")).toBe("2026-03-01T00:00:00.000Z");
+        expect(request.query.get("end_date")).toBe("2026-03-02T00:00:00.000Z");
+        return {
+          body: {
+            data: [{ id: "01A", status: "action_required", status_detail: "waiting_payment", total_amount: "10.00" }],
+            paging: { total: 1, limit: 30, offset: 0 },
+          },
+        };
+      },
+    });
+    const result = await mercadoPagoActionHandlers.search_orders(
+      { beginDate: "2026-03-01T00:00:00.000Z", endDate: "2026-03-02T00:00:00.000Z" },
+      { accessToken, fetcher },
+    );
+    expect(result).toMatchObject({ orders: [{ id: "01A", awaitingPayment: true, paid: false }] });
+    expect(requests[0]?.url).not.toContain("/merchant_orders");
+  });
+
+  it("gets one order and keeps waiting_capture reserved, not paid", async () => {
+    const { fetcher, requests, accessToken } = context({
+      "GET https://api.mercadopago.com/v1/orders/01HOLD": () => ({
+        body: {
+          id: "01HOLD",
+          status: "action_required",
+          status_detail: "waiting_capture",
+          total_amount: "80.00",
+          total_paid_amount: "0.00",
+          country_code: "MLM",
+        },
+      }),
+    });
+    await expect(
+      mercadoPagoActionHandlers.get_order({ orderId: "01HOLD" }, { accessToken, fetcher }),
+    ).resolves.toMatchObject({
+      order: { id: "01HOLD", awaitingCapture: true, awaitingPayment: false, paid: false, totalAmount: "80.00" },
+    });
+    expect(requests[0]?.url).toBe("https://api.mercadopago.com/v1/orders/01HOLD");
+  });
+
+  it("cancels through the order cancel endpoint", async () => {
+    const { fetcher, requests, accessToken } = context({
+      "POST https://api.mercadopago.com/v1/orders/01OPEN/cancel": (request) => {
+        expect(request.headers["x-idempotency-key"]).toBe("cancel-1");
+        expect(request.json).toBeNull();
+        return { body: { id: "01OPEN", status: "canceled", status_detail: "created", total_amount: "40.00" } };
+      },
+    });
+    await expect(
+      mercadoPagoActionHandlers.cancel_order(
+        { orderId: "01OPEN", idempotencyKey: "cancel-1" },
+        { accessToken, fetcher },
+      ),
+    ).resolves.toMatchObject({ order: { id: "01OPEN", status: "canceled", paid: false } });
+    expect(requests[0]?.method).toBe("POST");
+  });
+
+  it("refunds a full order with an empty body and a partial order by transaction", async () => {
+    const full = context({
+      "POST https://api.mercadopago.com/v1/orders/01PAID/refund": (request) => {
+        expect(request.headers["x-idempotency-key"]).toBe("refund-full");
+        expect(request.json).toEqual({});
+        return {
+          status: 201,
+          body: {
+            id: "01PAID",
+            status: "processed",
+            status_detail: "accredited",
+            total_amount: "80.00",
+            total_paid_amount: "0.00",
+          },
+        };
+      },
+    });
+    await expect(
+      mercadoPagoActionHandlers.refund_order(
+        { orderId: "01PAID", idempotencyKey: "refund-full" },
+        { accessToken: token, fetcher: full.fetcher },
+      ),
+    ).resolves.toMatchObject({ order: { id: "01PAID", paidAmount: "0.00" } });
+
+    const partial = context({
+      "POST https://api.mercadopago.com/v1/orders/01PAID/refund": (request) => {
+        expect(request.json).toEqual({ transactions: [{ id: "tx-9", amount: "25.00" }] });
+        return {
+          status: 201,
+          body: { id: "01PAID", status: "processed", status_detail: "accredited", total_paid_amount: "55.00" },
+        };
+      },
+    });
+    await expect(
+      mercadoPagoActionHandlers.refund_order(
+        { orderId: "01PAID", idempotencyKey: "refund-part", transactionId: "tx-9", amount: "25.00" },
+        { accessToken: token, fetcher: partial.fetcher },
+      ),
+    ).resolves.toMatchObject({ order: { paidAmount: "55.00" } });
+
+    const incomplete = context({});
+    await expect(
+      mercadoPagoActionHandlers.refund_order(
+        { orderId: "01PAID", idempotencyKey: "refund-bad", amount: "25.00" },
+        { accessToken: token, fetcher: incomplete.fetcher },
+      ),
+    ).rejects.toBeInstanceOf(ProviderRequestError);
+    expect(incomplete.requests).toHaveLength(0);
+  });
+
+  it("searches claims by status and reads paging", async () => {
+    const { fetcher, requests, accessToken } = context({
+      "GET https://api.mercadopago.com/post-purchase/v1/claims/search": (request) => {
+        expect(request.query.get("status")).toBe("opened");
+        expect(request.query.get("type")).toBe("mediations");
+        return {
+          body: {
+            paging: { total: 1, limit: 30, offset: 0 },
+            results: [{ id: 77, type: "mediations", stage: "claim", status: "opened", resource: "payment" }],
+          },
+        };
+      },
+    });
+    await expect(
+      mercadoPagoActionHandlers.search_claims({ status: "opened", type: "mediations" }, { accessToken, fetcher }),
+    ).resolves.toMatchObject({
+      claims: [{ id: "77", status: "opened", type: "mediations" }],
+      paging: { total: 1 },
+    });
+    expect(requests[0]?.url).toContain("/post-purchase/v1/claims/search");
+  });
+
+  it("captures only through the order capture endpoint", async () => {
+    const { fetcher, requests, accessToken } = context({
+      "POST https://api.mercadopago.com/v1/orders/01CAP/capture": (request) => {
+        expect(request.headers["x-idempotency-key"]).toBe("cap-1");
+        expect(request.json).toBeNull();
+        return { body: { id: "01CAP", status: "processed", status_detail: "accredited", total_amount: "80.00" } };
+      },
+    });
+    await expect(
+      mercadoPagoActionHandlers.capture_order({ orderId: "01CAP", idempotencyKey: "cap-1" }, { accessToken, fetcher }),
+    ).resolves.toMatchObject({ order: { paid: true, awaitingCapture: false } });
+    expect(requests[0]?.url).toBe("https://api.mercadopago.com/v1/orders/01CAP/capture");
+  });
+
+  it("reads a chargeback and a claim with its messages, and does not upload", async () => {
+    const { fetcher, requests, accessToken } = context({
+      "GET https://api.mercadopago.com/v1/chargebacks/cb-1": () => ({
+        body: {
+          id: "cb-1",
+          amount: 125.5,
+          currency: "MXN",
+          documentation_required: true,
+          documentation_status: "not_supplied",
+          payments: [{ id: 99 }],
+        },
+      }),
+      "GET https://api.mercadopago.com/post-purchase/v1/claims/77": () => ({
+        body: { id: 77, type: "mediations", stage: "claim", status: "opened", resource: "payment", reason_id: "PNR" },
+      }),
+      "GET https://api.mercadopago.com/post-purchase/v1/claims/77/messages": () => ({
+        body: [{ id: 1, message: "No recibi el producto", from: { role: "complainant" } }],
+      }),
+    });
+    await expect(
+      mercadoPagoActionHandlers.get_chargeback({ chargebackId: "cb-1" }, { accessToken, fetcher }),
+    ).resolves.toMatchObject({
+      chargeback: { id: "cb-1", amount: "125.50", documentationStatus: "not_supplied", paymentIds: ["99"] },
+    });
+    await expect(
+      mercadoPagoActionHandlers.get_claim({ claimId: "77" }, { accessToken, fetcher }),
+    ).resolves.toMatchObject({
+      claim: { id: "77", reasonId: "PNR", status: "opened" },
+      messages: [{ role: "complainant", message: "No recibi el producto" }],
+    });
+    expect(requests.map((request) => request.method)).toEqual(["GET", "GET", "GET"]);
+  });
+});
+
+describe("payment methods and identification types", () => {
+  it("maps Mexico methods, installment plans, and RFC", async () => {
+    const { fetcher, accessToken } = context({
+      "GET https://api.mercadopago.com/v1/payment_methods": () => ({
+        body: [
+          {
+            id: "oxxo",
+            name: "OXXO",
+            payment_type_id: "ticket",
+            status: "active",
+            min_allowed_amount: 10,
+            max_allowed_amount: 10000,
+          },
+        ],
+      }),
+      "GET https://api.mercadopago.com/v1/payment_methods/installments": (request) => {
+        expect(request.query.get("amount")).toBe("1000");
+        expect(request.query.get("payment_method_id")).toBe("visa");
+        return {
+          body: [
+            {
+              payment_method_id: "visa",
+              payment_type_id: "credit_card",
+              issuer: { name: "Banamex" },
+              payer_costs: [
+                {
+                  installments: 3,
+                  installment_rate: 0,
+                  installment_amount: 333.33,
+                  total_amount: 1000,
+                  labels: ["CFT_0,00%"],
+                },
+              ],
+            },
+          ],
+        };
+      },
+      "GET https://api.mercadopago.com/v1/identification_types": () => ({
+        body: [
+          { id: "RFC", name: "RFC", type: "letter", min_length: 12, max_length: 13 },
+          { id: "CURP", name: "CURP", type: "letter", min_length: 18, max_length: 18 },
+        ],
+      }),
+    });
+    await expect(mercadoPagoActionHandlers.list_payment_methods({}, { accessToken, fetcher })).resolves.toMatchObject({
+      paymentMethods: [{ id: "oxxo", minAllowedAmount: "10.00", maxAllowedAmount: "10000.00" }],
+    });
+    await expect(
+      mercadoPagoActionHandlers.get_installments(
+        { paymentMethodId: "visa", amount: "1000.00" },
+        { accessToken, fetcher },
+      ),
+    ).resolves.toMatchObject({
+      plans: [
+        { issuerName: "Banamex", payerCosts: [{ installments: 3, totalAmount: "1000.00", labels: ["CFT_0,00%"] }] },
+      ],
+    });
+    await expect(
+      mercadoPagoActionHandlers.list_identification_types({}, { accessToken, fetcher }),
+    ).resolves.toMatchObject({
+      identificationTypes: [{ id: "RFC", minLength: 12 }, { id: "CURP" }],
     });
   });
 });
@@ -588,7 +1024,16 @@ describe("webhook signature", () => {
   const manifest = `id:${resourceId};request-id:${requestId};ts:${ts};`;
   const signature = createHmac("sha256", secret).update(manifest).digest("hex");
 
-  function receive(header: string, body: unknown = { id: 1, type: "payment", action: "payment.updated", data: { id: resourceId }, payment: { status: "approved" } }) {
+  function receive(
+    header: string,
+    body: unknown = {
+      id: 1,
+      type: "payment",
+      action: "payment.updated",
+      data: { id: resourceId },
+      payment: { status: "approved" },
+    },
+  ) {
     return mercadoPagoEvent.receive({
       admit: true,
       bindingId: "binding",
@@ -617,7 +1062,9 @@ describe("webhook signature", () => {
   it("rejects a wrong secret, a missing header, and a body signature", async () => {
     await expect(receive(`ts=${ts},v1=${"0".repeat(64)}`)).resolves.toMatchObject({ outcome: "respond", status: 401 });
     await expect(receive("")).resolves.toMatchObject({ outcome: "respond", status: 401 });
-    const bodySignature = createHmac("sha256", secret).update(JSON.stringify({ id: 1 })).digest("hex");
+    const bodySignature = createHmac("sha256", secret)
+      .update(JSON.stringify({ id: 1 }))
+      .digest("hex");
     await expect(receive(`ts=${ts},v1=${bodySignature}`)).resolves.toMatchObject({ outcome: "respond", status: 401 });
     expect(parseSignature(`ts=${ts},v1=${signature}`)).toEqual({ ts, v1: signature });
   });

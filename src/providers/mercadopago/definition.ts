@@ -11,6 +11,10 @@ const service = "mercadopago";
  *
  * Sellers paste an access token, or connect with their own OAuth application.
  * Amounts are decimal major units, never centavos.
+ *
+ * What stays out, and why, is documented at the top of actions.ts. Do not add
+ * card charges, saved cards, Point, in-store QR, payouts, SPEI disbursements,
+ * Wallet Connect, dispute uploads, or marketplace fee splits without reading that note.
  */
 export const provider: ProviderDefinition = {
   service,

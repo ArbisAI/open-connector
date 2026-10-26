@@ -5,6 +5,31 @@ import { defineProviderAction } from "../../core/provider-definition.ts";
 
 const service = "mercadopago";
 
+/**
+ * Surfaces this Mexico connector does not expose. Left here so a later reader
+ * does not add them as "the missing Stripe twin." Official Mexico spec:
+ * https://github.com/mercadopago/openapi/blob/main/by-site/MLM/spec3.yaml
+ *
+ * - Card charge and saved cards. POST /v1/payments with a token, POST /v1/card_tokens,
+ *   and /v1/customers/{id}/cards need a browser token. One agent call would take money
+ *   or store a card. Checkout Pro (create_payment_link) is the card path.
+ * - Point terminals and in-store QR. /point/integration-api and /instore/qr talk to
+ *   hardware. They are not a chat payment link.
+ * - Payouts and SPEI disbursements. POST /v1/payouts and the disbursement endpoints
+ *   send money out of the seller account.
+ * - Wallet Connect agreements. POST /v2/wallet_connect/agreements starts a wallet
+ *   authorization, which is a separate product from Checkout Pro.
+ * - Claim evidence and chargeback documents. PUT /v1/chargebacks/{id} and
+ *   POST /post-purchase/v1/claims/{id}/actions/evidences upload files into a dispute.
+ *   Reads of the dispute stay. Uploads stay out.
+ * - Marketplace fee splits. application_fee and marketplace fields move a cut to
+ *   another account. This connector is a single Mexico seller.
+ *
+ * Webhook ingestion stays a pointer (topic, action, notification id, resource id,
+ * live mode). It does not store the payment body. Chat does not subscribe to that
+ * feed. A chargebacks notification is only an id; open it with get_chargeback.
+ */
+
 interface MercadoPagoActionSource {
   name: MercadoPagoActionName;
   operationType: ActionDefinition["operationType"];
@@ -83,10 +108,23 @@ const customerFields = {
   metadata,
 };
 
-const rawObject = s.looseObject({}, { description: "The Mercado Pago object, kept so unlisted fields stay available." });
+const rawObject = s.looseObject(
+  {},
+  { description: "The Mercado Pago object, kept so unlisted fields stay available." },
+);
 
 const paymentStatus = s.stringEnum(
-  ["pending", "approved", "authorized", "in_process", "in_mediation", "rejected", "cancelled", "refunded", "charged_back"],
+  [
+    "pending",
+    "approved",
+    "authorized",
+    "in_process",
+    "in_mediation",
+    "rejected",
+    "cancelled",
+    "refunded",
+    "charged_back",
+  ],
   { description: "Payment status. pending is not paid. OXXO and SPEI stay pending until the payer finishes." },
 );
 
@@ -95,10 +133,14 @@ const normalizedPayment = s.object(
     id: s.string({ description: "Payment id." }),
     status: paymentStatus,
     statusDetail: s.nullable(s.string({ description: "Finer status, such as accredited or pending_waiting_payment." })),
-    pending: s.boolean({ description: "True when the payer still has to act or Mercado Pago has not accredited the money." }),
+    pending: s.boolean({
+      description: "True when the payer still has to act or Mercado Pago has not accredited the money.",
+    }),
     paid: s.boolean({ description: "True only when status is approved." }),
     paymentMethodId: s.nullable(s.string({ description: "Method id, such as visa, oxxo, or clabe." })),
-    paymentTypeId: s.nullable(s.string({ description: "Method family, such as credit_card, ticket, or bank_transfer." })),
+    paymentTypeId: s.nullable(
+      s.string({ description: "Method family, such as credit_card, ticket, or bank_transfer." }),
+    ),
     transactionAmount: s.nullable(s.string({ description: "Original amount as a two-decimal string." })),
     amountRefunded: s.nullable(s.string({ description: "Amount already refunded, as a two-decimal string." })),
     currency: s.nullable(s.string({ description: "Currency code." })),
@@ -143,8 +185,131 @@ const normalizedOrder = s.object(
 );
 
 const subscriptionInvoiceStatus = s.stringEnum(["scheduled", "processed", "recycling", "cancelled"], {
-  description: "Subscription bill status. scheduled and recycling are open. processed is paid only after the linked payment is approved.",
+  description:
+    "Subscription bill status. scheduled and recycling are open. processed is paid only after the linked payment is approved.",
 });
+
+const checkoutOrderStatus = s.stringEnum(["created", "processed", "action_required", "processing", "canceled"], {
+  description:
+    "Orders API status. action_required means someone must capture or finish a step. waiting_payment is a status detail, not paid.",
+});
+
+const checkoutOrderStatusDetail = s.stringEnum(
+  ["created", "accredited", "in_process", "in_review", "waiting_payment", "waiting_capture", "waiting_transfer"],
+  { description: "Finer Orders API status. waiting_payment and waiting_transfer are not paid." },
+);
+
+const normalizedCheckoutOrder = s.object(
+  {
+    id: s.string({ description: "Orders API id. Not a Checkout Pro merchant order id." }),
+    status: checkoutOrderStatus,
+    statusDetail: s.nullable(checkoutOrderStatusDetail),
+    awaitingPayment: s.boolean({
+      description: "True when the payer still has to pay at OXXO or by SPEI. That is not paid.",
+    }),
+    awaitingCapture: s.boolean({
+      description: "True when a card authorization is reserved and not yet captured.",
+    }),
+    paid: s.boolean({ description: "True only when status detail is accredited." }),
+    totalAmount: s.nullable(s.string({ description: "Order total as a two-decimal string." })),
+    paidAmount: s.nullable(s.string({ description: "Amount paid so far as a two-decimal string." })),
+    currency: s.nullable(s.string({ description: "Country code from the order. Mexico is MLM; amounts are MXN." })),
+    externalReference: s.nullable(s.string({ description: "Caller reference." })),
+    paymentMethodId: s.nullable(
+      s.string({ description: "Method id on the first transaction, such as oxxo or clabe." }),
+    ),
+    paymentMethodType: s.nullable(s.string({ description: "Method family, such as ticket or bank_transfer." })),
+    ticketUrl: s.nullable(s.string({ description: "OXXO ticket URL when Mercado Pago returned one." })),
+    reference: s.nullable(s.string({ description: "SPEI CLABE or offline reference when Mercado Pago returned one." })),
+    barcodeContent: s.nullable(s.string({ description: "Barcode string for an offline ticket, when present." })),
+    dateCreated: s.nullable(s.string({ description: "Creation time." })),
+    raw: rawObject,
+  },
+  {
+    required: ["id", "status", "awaitingPayment", "awaitingCapture", "paid", "raw"],
+    description: "A Checkout API order. Distinct from a Checkout Pro merchant order.",
+  },
+);
+
+const paymentMethod = s.object(
+  {
+    id: s.string({ description: "Method id, such as oxxo, clabe, or visa." }),
+    name: s.nullable(s.string({ description: "Display name." })),
+    paymentTypeId: s.nullable(s.string({ description: "Family, such as ticket, bank_transfer, or credit_card." })),
+    status: s.nullable(s.string({ description: "active or deactivated." })),
+    minAllowedAmount: s.nullable(s.string({ description: "Minimum amount as a two-decimal string." })),
+    maxAllowedAmount: s.nullable(s.string({ description: "Maximum amount as a two-decimal string." })),
+    deferredCapture: s.nullable(s.string({ description: "supported, unsupported, or does_not_apply." })),
+  },
+  { required: ["id"], description: "A payment method available to this Mexico account." },
+);
+
+const installmentPlan = s.object(
+  {
+    installments: s.integer({ description: "Number of installments. 1 means a single payment." }),
+    installmentRate: s.nullable(s.number({ description: "Interest rate for this plan." })),
+    installmentAmount: s.nullable(s.string({ description: "Each installment as a two-decimal string." })),
+    totalAmount: s.nullable(s.string({ description: "Total the payer would pay as a two-decimal string." })),
+    labels: s.array(s.string({ description: "Label Mercado Pago attached, such as a meses sin intereses tag." }), {
+      description: "Plan labels.",
+    }),
+  },
+  { required: ["installments"], description: "One installment plan. Reading it charges nobody." },
+);
+
+const identificationType = s.object(
+  {
+    id: s.string({ description: "Type id. Mexico returns RFC and CURP." }),
+    name: s.nullable(s.string({ description: "Display name." })),
+    type: s.nullable(s.string({ description: "number or letter." })),
+    minLength: s.nullable(s.integer({ description: "Minimum length." })),
+    maxLength: s.nullable(s.integer({ description: "Maximum length." })),
+  },
+  { required: ["id"], description: "An identification type valid for this account's site." },
+);
+
+const chargeback = s.object(
+  {
+    id: s.string({ description: "Chargeback id." }),
+    amount: s.nullable(s.string({ description: "Disputed amount as a two-decimal string." })),
+    currency: s.nullable(s.string({ description: "Currency code." })),
+    documentationRequired: s.nullable(s.boolean({ description: "True when Mercado Pago still wants documents." })),
+    documentationStatus: s.nullable(s.string({ description: "valid, invalid, or not_supplied." })),
+    documentationDeadline: s.nullable(s.string({ description: "Deadline for documents." })),
+    coverageApplied: s.nullable(s.boolean({ description: "True when coverage was applied." })),
+    dateCreated: s.nullable(s.string({ description: "Creation time." })),
+    paymentIds: s.array(s.string({ description: "Related payment id." }), {
+      description: "Payments named on the chargeback.",
+    }),
+    raw: rawObject,
+  },
+  { required: ["id", "raw"], description: "A chargeback. This read does not upload documents." },
+);
+
+const claim = s.object(
+  {
+    id: s.string({ description: "Claim id." }),
+    type: s.nullable(s.string({ description: "mediations or claims." })),
+    stage: s.nullable(s.string({ description: "claim, dispute, or resolution." })),
+    status: s.nullable(s.string({ description: "opened, closed, or cancelled." })),
+    resource: s.nullable(s.string({ description: "What the claim is about: payment, shipment, or order." })),
+    reasonId: s.nullable(s.string({ description: "Reason code." })),
+    dateCreated: s.nullable(s.string({ description: "Creation time." })),
+    lastUpdated: s.nullable(s.string({ description: "Last update time." })),
+    raw: rawObject,
+  },
+  { required: ["id", "raw"], description: "A post-sale claim. This read does not send a message or upload evidence." },
+);
+
+const claimMessage = s.object(
+  {
+    id: s.nullable(s.string({ description: "Message id." })),
+    dateCreated: s.nullable(s.string({ description: "When the message was posted." })),
+    role: s.nullable(s.string({ description: "complainant, respondent, or mediator." })),
+    message: s.nullable(s.string({ description: "Message text." })),
+  },
+  { description: "One message in a claim thread." },
+);
 
 const normalizedSubscriptionInvoice = s.object(
   {
@@ -156,7 +321,9 @@ const normalizedSubscriptionInvoice = s.object(
     transactionAmount: s.nullable(s.string({ description: "Bill amount as a two-decimal string." })),
     currency: s.nullable(s.string({ description: "Currency code." })),
     paymentId: s.nullable(s.string({ description: "Linked payment id, when Mercado Pago has created one." })),
-    paymentStatus: s.nullable(s.string({ description: "Status of the linked payment. Fetched when a payment id is present." })),
+    paymentStatus: s.nullable(
+      s.string({ description: "Status of the linked payment. Fetched when a payment id is present." }),
+    ),
     dateCreated: s.nullable(s.string({ description: "Creation time." })),
     raw: rawObject,
   },
@@ -168,7 +335,10 @@ const normalizedSubscriptionInvoice = s.object(
 
 const autoRecurring = s.object(
   {
-    frequency: s.integer({ minimum: 1, description: "How many frequency units between charges. 1 with months is monthly." }),
+    frequency: s.integer({
+      minimum: 1,
+      description: "How many frequency units between charges. 1 with months is monthly.",
+    }),
     frequency_type: s.stringEnum(["days", "months"], { description: "Unit of the billing interval." }),
     transaction_amount: decimalAmount,
     currency_id: currency,
@@ -207,11 +377,15 @@ const actions: MercadoPagoActionSource[] = [
     "Read available, unavailable, and total account money. Uses the live balance when Mercado Pago still serves it, otherwise the latest releases report. A report balance is not live.",
     input("No input is required to read the balance.", {}),
     output("Account money.", {
-      available: s.nullable(s.string({ description: "Available amount as a two-decimal string. Null when only a report task exists." })),
+      available: s.nullable(
+        s.string({ description: "Available amount as a two-decimal string. Null when only a report task exists." }),
+      ),
       unavailable: s.nullable(s.string({ description: "Unavailable amount as a two-decimal string." })),
       total: s.nullable(s.string({ description: "Total amount as a two-decimal string." })),
       currency: s.nullable(s.string({ description: "Currency code." })),
-      source: s.stringEnum(["live", "report"], { description: "live is the account balance. report is the latest releases report." }),
+      source: s.stringEnum(["live", "report"], {
+        description: "live is the account balance. report is the latest releases report.",
+      }),
       asOf: s.nullable(s.string({ description: "When this figure was produced. Empty for a live read." })),
     }),
   ),
@@ -294,14 +468,20 @@ const actions: MercadoPagoActionSource[] = [
     "update_customer",
     "write",
     "Update a Mercado Pago customer. Only the fields you send are changed.",
-    input("Input for updating a customer.", { customerId: s.string({ minLength: 1, description: "Customer id." }), ...customerFields }, ["customerId"]),
+    input(
+      "Input for updating a customer.",
+      { customerId: s.string({ minLength: 1, description: "Customer id." }), ...customerFields },
+      ["customerId"],
+    ),
     output("The updated customer.", { customer: rawObject }),
   ),
   action(
     "get_customer",
     "read",
     "Retrieve a Mercado Pago customer by id.",
-    input("Input for retrieving a customer.", { customerId: s.string({ minLength: 1, description: "Customer id." }) }, ["customerId"]),
+    input("Input for retrieving a customer.", { customerId: s.string({ minLength: 1, description: "Customer id." }) }, [
+      "customerId",
+    ]),
     output("The customer.", { customer: rawObject }),
   ),
   action(
@@ -322,7 +502,9 @@ const actions: MercadoPagoActionSource[] = [
     "delete_customer",
     "destructive",
     "Delete a Mercado Pago customer by id.",
-    input("Input for deleting a customer.", { customerId: s.string({ minLength: 1, description: "Customer id." }) }, ["customerId"]),
+    input("Input for deleting a customer.", { customerId: s.string({ minLength: 1, description: "Customer id." }) }, [
+      "customerId",
+    ]),
     output("Delete result.", {
       deleted: s.boolean({ description: "Whether Mercado Pago accepted the delete." }),
       id: s.string({ description: "Deleted customer id." }),
@@ -374,21 +556,20 @@ const actions: MercadoPagoActionSource[] = [
     "search_plans",
     "read",
     "Search subscription plans. This is the catalog list: Mercado Pago does not store one-time products.",
-    input(
-      "Input for searching plans.",
-      {
-        status: s.stringEnum(["active", "inactive"], { description: "Filter by plan status." }),
-        q: s.string({ description: "Free-text query Mercado Pago applies to plan search." }),
-        ...pageInput,
-      },
-    ),
+    input("Input for searching plans.", {
+      status: s.stringEnum(["active", "inactive"], { description: "Filter by plan status." }),
+      q: s.string({ description: "Free-text query Mercado Pago applies to plan search." }),
+      ...pageInput,
+    }),
     output("Plan search page.", { plans: s.array(rawObject, { description: "Matching plans." }), paging }),
   ),
   action(
     "get_payment",
     "read",
     "Retrieve one payment. pending, including OXXO and SPEI, is not paid.",
-    input("Input for retrieving a payment.", { paymentId: s.string({ minLength: 1, description: "Payment id." }) }, ["paymentId"]),
+    input("Input for retrieving a payment.", { paymentId: s.string({ minLength: 1, description: "Payment id." }) }, [
+      "paymentId",
+    ]),
     output("The payment.", { payment: normalizedPayment }),
   ),
   action(
@@ -417,7 +598,11 @@ const actions: MercadoPagoActionSource[] = [
     "get_merchant_order",
     "read",
     "Retrieve a Checkout Pro merchant order by id. This is the invoice substitute for a payment link.",
-    input("Input for retrieving a merchant order.", { orderId: s.string({ minLength: 1, description: "Merchant order id." }) }, ["orderId"]),
+    input(
+      "Input for retrieving a merchant order.",
+      { orderId: s.string({ minLength: 1, description: "Merchant order id." }) },
+      ["orderId"],
+    ),
     output("The merchant order.", { order: normalizedOrder }),
   ),
   action(
@@ -437,7 +622,10 @@ const actions: MercadoPagoActionSource[] = [
     "read",
     "List Checkout Pro orders that are still opened and have an amount due. This is the open-invoice list.",
     input("Input for listing open merchant orders.", pageInput),
-    output("Open merchant orders.", { orders: s.array(normalizedOrder, { description: "Opened orders with an amount due." }), paging }),
+    output("Open merchant orders.", {
+      orders: s.array(normalizedOrder, { description: "Opened orders with an amount due." }),
+      paging,
+    }),
   ),
   action(
     "get_subscription_invoice",
@@ -476,9 +664,16 @@ const actions: MercadoPagoActionSource[] = [
         amount: decimalAmount,
         currency,
         description: s.string({ minLength: 1, description: "What the payer is paying for, shown at checkout." }),
-        idempotencyKey: s.string({ minLength: 1, maxLength: 64, description: "Stable key for this charge. A repeat returns the same link." }),
+        idempotencyKey: s.string({
+          minLength: 1,
+          maxLength: 64,
+          description: "Stable key for this charge. A repeat returns the same link.",
+        }),
         payerEmail: s.email("Payer email to prefill at checkout."),
-        externalReference: s.string({ maxLength: 64, description: "Caller reference. Defaults to the idempotency key." }),
+        externalReference: s.string({
+          maxLength: 64,
+          description: "Caller reference. Defaults to the idempotency key.",
+        }),
         expiresAt: s.dateTime("When the link stops accepting payment."),
         metadata,
       },
@@ -497,7 +692,11 @@ const actions: MercadoPagoActionSource[] = [
     "get_payment_link",
     "read",
     "Retrieve a Checkout Pro payment link by preference id.",
-    input("Input for retrieving a payment link.", { paymentLinkId: s.string({ minLength: 1, description: "Preference id." }) }, ["paymentLinkId"]),
+    input(
+      "Input for retrieving a payment link.",
+      { paymentLinkId: s.string({ minLength: 1, description: "Preference id." }) },
+      ["paymentLinkId"],
+    ),
     output("The payment link.", {
       paymentLinkId: s.string({ description: "Preference id." }),
       url: s.nullable(s.url("Hosted checkout URL.")),
@@ -513,7 +712,10 @@ const actions: MercadoPagoActionSource[] = [
       externalReference: s.string({ description: "Reference stored on the preference." }),
       ...pageInput,
     }),
-    output("Payment link page.", { paymentLinks: s.array(rawObject, { description: "Matching preferences." }), paging }),
+    output("Payment link page.", {
+      paymentLinks: s.array(rawObject, { description: "Matching preferences." }),
+      paging,
+    }),
   ),
   action(
     "update_payment_link",
@@ -563,7 +765,11 @@ const actions: MercadoPagoActionSource[] = [
     "get_subscription",
     "read",
     "Retrieve a subscription by id.",
-    input("Input for retrieving a subscription.", { subscriptionId: s.string({ minLength: 1, description: "Subscription id." }) }, ["subscriptionId"]),
+    input(
+      "Input for retrieving a subscription.",
+      { subscriptionId: s.string({ minLength: 1, description: "Subscription id." }) },
+      ["subscriptionId"],
+    ),
     output("The subscription.", { subscription: rawObject }),
   ),
   action(
@@ -593,27 +799,46 @@ const actions: MercadoPagoActionSource[] = [
       q: s.string({ description: "Free-text query." }),
       ...pageInput,
     }),
-    output("Subscription page.", { subscriptions: s.array(rawObject, { description: "Matching subscriptions." }), paging }),
+    output("Subscription page.", {
+      subscriptions: s.array(rawObject, { description: "Matching subscriptions." }),
+      paging,
+    }),
   ),
   action(
     "pause_subscription",
     "write",
     "Pause a subscription. No further charges are created until it is authorized again.",
-    input("Input for pausing a subscription.", { subscriptionId: s.string({ minLength: 1, description: "Subscription id." }) }, ["subscriptionId"]),
-    output("The paused subscription.", { subscriptionId: s.string({ description: "Subscription id." }), status: s.string({ description: "Status after the update." }) }),
+    input(
+      "Input for pausing a subscription.",
+      { subscriptionId: s.string({ minLength: 1, description: "Subscription id." }) },
+      ["subscriptionId"],
+    ),
+    output("The paused subscription.", {
+      subscriptionId: s.string({ description: "Subscription id." }),
+      status: s.string({ description: "Status after the update." }),
+    }),
   ),
   action(
     "cancel_subscription",
     "destructive",
     "Cancel a subscription. Mercado Pago stops billing it.",
-    input("Input for cancelling a subscription.", { subscriptionId: s.string({ minLength: 1, description: "Subscription id." }) }, ["subscriptionId"]),
-    output("The cancelled subscription.", { subscriptionId: s.string({ description: "Subscription id." }), status: s.string({ description: "Status after the update." }) }),
+    input(
+      "Input for cancelling a subscription.",
+      { subscriptionId: s.string({ minLength: 1, description: "Subscription id." }) },
+      ["subscriptionId"],
+    ),
+    output("The cancelled subscription.", {
+      subscriptionId: s.string({ description: "Subscription id." }),
+      status: s.string({ description: "Status after the update." }),
+    }),
   ),
   action(
     "list_refunds",
     "read",
     "List refunds already recorded for a payment. This does not move money.",
-    input("Input for listing refunds.", { paymentId: s.string({ minLength: 1, description: "Payment id." }) }, ["paymentId"]),
+    input("Input for listing refunds.", { paymentId: s.string({ minLength: 1, description: "Payment id." }) }, [
+      "paymentId",
+    ]),
     output("Refunds for the payment.", { refunds: s.array(rawObject, { description: "Refund records." }) }),
   ),
   action(
@@ -635,6 +860,191 @@ const actions: MercadoPagoActionSource[] = [
       status: s.nullable(s.string({ description: "approved, in_process, or rejected. in_process is not done." })),
       approved: s.boolean({ description: "True only when status is approved." }),
       raw: rawObject,
+    }),
+  ),
+  action(
+    "list_payment_methods",
+    "read",
+    "List payment methods available to this Mexico account. Use this before naming a method. Reading the list charges nobody.",
+    input("No input is required to list payment methods.", {}),
+    output("Payment methods for this account.", {
+      paymentMethods: s.array(paymentMethod, { description: "Methods Mercado Pago returned." }),
+    }),
+  ),
+  action(
+    "get_installments",
+    "read",
+    "Read installment plans for a method and amount. This does not charge the card and does not save a card.",
+    input(
+      "Input for reading installment plans.",
+      {
+        paymentMethodId: s.string({ minLength: 1, description: "Method id, such as visa." }),
+        amount: decimalAmount,
+        bin: s.string({ description: "First six digits of the card, when the payer already shared them." }),
+        issuerId: s.string({ description: "Issuer id, when known." }),
+      },
+      ["paymentMethodId", "amount"],
+    ),
+    output("Installment plans. An empty list means Mercado Pago offered none for this amount.", {
+      plans: s.array(
+        s.object(
+          {
+            paymentMethodId: s.nullable(s.string({ description: "Method id." })),
+            paymentTypeId: s.nullable(s.string({ description: "Method family." })),
+            issuerName: s.nullable(s.string({ description: "Issuer name." })),
+            payerCosts: s.array(installmentPlan, { description: "Plans the payer can choose." }),
+          },
+          { description: "Installment options for one method and issuer." },
+        ),
+        { description: "Installment groups Mercado Pago returned." },
+      ),
+    }),
+  ),
+  action(
+    "list_identification_types",
+    "read",
+    "List identification types valid for this Mexico account. Mexico returns RFC and CURP.",
+    input("No input is required to list identification types.", {}),
+    output("Identification types.", {
+      identificationTypes: s.array(identificationType, { description: "Types Mercado Pago accepts for this site." }),
+    }),
+  ),
+  action(
+    "create_offline_payment",
+    "write",
+    "Create an OXXO ticket or a SPEI CLABE through the Orders API. The payer still has to pay. This does not charge a card. Cards, Point, and QR stay out.",
+    input(
+      "Input for creating an offline charge.",
+      {
+        method: s.stringEnum(["oxxo", "spei"], {
+          description: "oxxo creates a cash ticket. spei creates a CLABE transfer.",
+        }),
+        amount: decimalAmount,
+        payerEmail: s.email("Payer email. Required by the Orders API."),
+        idempotencyKey: s.string({
+          minLength: 1,
+          description: "Stable key for this charge. A repeat must not create a second order.",
+        }),
+        externalReference: s.string({
+          maxLength: 64,
+          description: "Caller reference. Defaults to the idempotency key.",
+        }),
+        description: s.string({ description: "What the payer is paying for." }),
+        expiration: s.string({
+          description:
+            "ISO 8601 duration, such as P3D for OXXO or P1D for SPEI. Defaults to P3D for OXXO and P1D for SPEI.",
+        }),
+      },
+      ["method", "amount", "payerEmail", "idempotencyKey"],
+    ),
+    output("The order and the ticket or CLABE. awaitingPayment means the payer has not paid yet.", {
+      order: normalizedCheckoutOrder,
+    }),
+  ),
+  action(
+    "get_order",
+    "read",
+    "Retrieve an Orders API order by id. This is not a Checkout Pro merchant order.",
+    input("Input for retrieving an order.", { orderId: s.string({ minLength: 1, description: "Orders API id." }) }, [
+      "orderId",
+    ]),
+    output("The order.", { order: normalizedCheckoutOrder }),
+  ),
+  action(
+    "search_orders",
+    "read",
+    "Search Orders API orders. beginDate and endDate are required. This does not search Checkout Pro merchant orders.",
+    input(
+      "Input for searching orders.",
+      {
+        beginDate: s.string({ minLength: 1, description: "Range start, ISO 8601." }),
+        endDate: s.string({ minLength: 1, description: "Range end, ISO 8601." }),
+        externalReference: s.string({ description: "Caller reference." }),
+        status: checkoutOrderStatus,
+        ...pageInput,
+      },
+      ["beginDate", "endDate"],
+    ),
+    output("Order page.", { orders: s.array(normalizedCheckoutOrder, { description: "Matching orders." }), paging }),
+  ),
+  action(
+    "cancel_order",
+    "destructive",
+    "Cancel an Orders API order that is still created or action_required. This does not cancel a Checkout Pro merchant order.",
+    input(
+      "Input for cancelling an order.",
+      {
+        orderId: s.string({ minLength: 1, description: "Orders API id." }),
+        idempotencyKey: s.string({ minLength: 1, description: "Stable key for this cancellation." }),
+      },
+      ["orderId", "idempotencyKey"],
+    ),
+    output("The cancelled order.", { order: normalizedCheckoutOrder }),
+  ),
+  action(
+    "capture_order",
+    "destructive",
+    "Capture a card authorization that was only reserved. This takes the reserved money. It does not create a new card charge.",
+    input(
+      "Input for capturing an order.",
+      {
+        orderId: s.string({ minLength: 1, description: "Orders API id of an order waiting for capture." }),
+        idempotencyKey: s.string({ minLength: 1, description: "Stable key for this capture." }),
+      },
+      ["orderId", "idempotencyKey"],
+    ),
+    output("The captured order.", { order: normalizedCheckoutOrder }),
+  ),
+  action(
+    "refund_order",
+    "destructive",
+    "Refund an Orders API order. Omit transactionId and amount for a full refund. A partial refund names one transaction and a decimal amount. This returns money. It does not refund a Checkout Pro payment; use create_refund for that.",
+    input(
+      "Input for refunding an order.",
+      {
+        orderId: s.string({ minLength: 1, description: "Orders API id." }),
+        idempotencyKey: s.string({
+          minLength: 1,
+          description: "Stable key for this refund. A repeat must not create a second refund.",
+        }),
+        transactionId: s.string({ description: "Transaction id for a partial refund. Omit for a full order refund." }),
+        amount: decimalAmount,
+      },
+      ["orderId", "idempotencyKey"],
+    ),
+    output("The order after the refund request.", { order: normalizedCheckoutOrder }),
+  ),
+  action(
+    "get_chargeback",
+    "read",
+    "Read a chargeback by id. This does not upload documents.",
+    input(
+      "Input for reading a chargeback.",
+      { chargebackId: s.string({ minLength: 1, description: "Chargeback id." }) },
+      ["chargebackId"],
+    ),
+    output("The chargeback.", { chargeback }),
+  ),
+  action(
+    "search_claims",
+    "read",
+    "Search post-sale claims. This does not open a dispute or send a message.",
+    input("Input for searching claims.", {
+      type: s.stringEnum(["mediations", "claims"], { description: "Claim family." }),
+      stage: s.stringEnum(["claim", "dispute", "resolution"], { description: "Lifecycle stage." }),
+      status: s.stringEnum(["opened", "closed", "cancelled"], { description: "Claim status." }),
+      ...pageInput,
+    }),
+    output("Claim page.", { claims: s.array(claim, { description: "Matching claims." }), paging }),
+  ),
+  action(
+    "get_claim",
+    "read",
+    "Read one claim and its messages. This does not upload evidence or reply.",
+    input("Input for reading a claim.", { claimId: s.string({ minLength: 1, description: "Claim id." }) }, ["claimId"]),
+    output("The claim and its messages.", {
+      claim,
+      messages: s.array(claimMessage, { description: "Messages on the claim. Empty when Mercado Pago returned none." }),
     }),
   ),
   action(
@@ -695,7 +1105,19 @@ export type MercadoPagoActionName =
   | "cancel_subscription"
   | "list_refunds"
   | "get_refund"
-  | "create_refund";
+  | "create_refund"
+  | "list_payment_methods"
+  | "get_installments"
+  | "list_identification_types"
+  | "create_offline_payment"
+  | "get_order"
+  | "search_orders"
+  | "cancel_order"
+  | "capture_order"
+  | "refund_order"
+  | "get_chargeback"
+  | "search_claims"
+  | "get_claim";
 
 export const mercadoPagoActions: ActionDefinition[] = actions.map((source) =>
   defineProviderAction(service, {

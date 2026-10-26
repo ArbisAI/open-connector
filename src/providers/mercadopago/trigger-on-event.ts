@@ -17,9 +17,7 @@ export const mercadoPagoEvent: IntegrationDefinition = {
     const parsed = parseSignature(header);
     const resourceId = resourceIdOf(context.payload, context.query("data.id") ?? context.query("id"));
     const manifest = `id:${resourceId};request-id:${requestId};ts:${parsed.ts};`;
-    const valid = parsed.v1
-      ? await verifyHexHmac(context.callbackSecret, [bytes(manifest)], parsed.v1)
-      : false;
+    const valid = parsed.v1 ? await verifyHexHmac(context.callbackSecret, [bytes(manifest)], parsed.v1) : false;
     if (!valid) {
       return { body: "", contentType: "text/plain", outcome: "respond", status: 401 };
     }
