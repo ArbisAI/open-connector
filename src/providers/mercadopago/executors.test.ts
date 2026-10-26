@@ -79,7 +79,7 @@ describe("credential validator", () => {
   it("accepts MLM and rejects other sites without a second call", async () => {
     const mexico = createFetcher({ "GET https://api.mercadolibre.com/users/me": accountRoute });
     const profile = await credentialValidators.apiKey!({ apiKey: token, values: {} }, { fetcher: mexico.fetcher });
-    expect(profile.profile).toMatchObject({ accountId: "1001", displayName: "TIENDA" });
+    expect(profile).toMatchObject({ profile: { accountId: "1001", displayName: "TIENDA" } });
     expect(mexico.requests).toHaveLength(1);
 
     const argentina = createFetcher({
@@ -95,7 +95,13 @@ describe("credential validator", () => {
     });
     await expect(
       credentialValidators.oauth2!(
-        { authType: "oauth2", accessToken: token, tokenType: "Bearer", profile: { displayName: "x" }, metadata: {} },
+        {
+          authType: "oauth2",
+          accessToken: token,
+          tokenType: "Bearer",
+          profile: { accountId: "x", displayName: "x", grantedScopes: [] },
+          metadata: {},
+        },
         { fetcher: brazil.fetcher },
       ),
     ).rejects.toMatchObject({
