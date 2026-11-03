@@ -6,6 +6,8 @@ import { OAuthClientConfigService } from "../../oauth/oauth-client-config-servic
 import { provider } from "./definition.ts";
 import { gmailOAuthScopes } from "./scopes.ts";
 
+const googleIdentityScopes = ["openid", "email", "profile"];
+
 const gmailComposeScope = "https://www.googleapis.com/auth/gmail.compose";
 const gmailSendScope = "https://www.googleapis.com/auth/gmail.send";
 const gmailSettingsSharingScope = "https://www.googleapis.com/auth/gmail.settings.sharing";
@@ -24,7 +26,13 @@ describe("Gmail provider definition", () => {
   it("keeps the default user OAuth scopes unchanged", () => {
     const oauth = provider.auth.find((auth) => auth.type === "oauth2");
 
-    expect(oauth?.scopes).toEqual([gmailReadonlyScope, gmailModifyScope, gmailLabelsScope, gmailSettingsBasicScope]);
+    expect(oauth?.scopes).toEqual([
+      gmailReadonlyScope,
+      gmailModifyScope,
+      gmailLabelsScope,
+      gmailSettingsBasicScope,
+      ...googleIdentityScopes,
+    ]);
   });
 
   it.each([{ requestedScopes: [gmailReadonlyScope, gmailComposeScope] }, { requestedScopes: [gmailSendScope] }])(
@@ -42,6 +50,16 @@ describe("Gmail provider definition", () => {
     },
   );
 
+  it("offers send and compose as explicit choices without selecting them by default", () => {
+    const oauth = provider.auth.find((auth) => auth.type === "oauth2");
+    for (const id of [gmailSendScope, gmailComposeScope]) {
+      expect(oauth?.authorizationOptions?.find((option) => option.id === id)).toMatchObject({
+        required: false,
+        defaultSelected: false,
+      });
+    }
+  });
+
   it("does not request optional scopes when no grant is specified", () => {
     const service = configService();
     const config = service.normalizeConfig("gmail", { clientId: "client-id", clientSecret: "client-secret" });
@@ -51,6 +69,7 @@ describe("Gmail provider definition", () => {
       gmailModifyScope,
       gmailLabelsScope,
       gmailSettingsBasicScope,
+      ...googleIdentityScopes,
     ]);
   });
 

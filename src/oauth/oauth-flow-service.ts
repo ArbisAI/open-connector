@@ -22,6 +22,7 @@ import {
   ProviderDispatchRequestError,
   withProviderHttpDispatchResult,
 } from "../providers/provider-runtime.ts";
+import { isMicrosoftService, verifyMicrosoftIdentity } from "./microsoft-identity.ts";
 import { requestAuthorizationCodeToken } from "./oauth-token.ts";
 
 /**
@@ -55,6 +56,7 @@ export interface OAuthAuthorizationState {
   state: string;
   createdAt: string;
   pkceCodeVerifier?: string;
+  identityNonce?: string;
   authorizationScopes?: string[];
   /**
    * `redirect_uri` the authorization request carried. The code exchange must
@@ -229,6 +231,8 @@ export class OAuthFlowService {
       state,
       createdAt: now.toISOString(),
       pkceCodeVerifier,
+      identityNonce:
+        isMicrosoftService(service) && authorizationScopes.includes("openid") ? crypto.randomUUID() : undefined,
       authorizationScopes: auth.authorizationOptions ? authorizationScopes : undefined,
       redirectUri,
       clientConfig: input.clientConfig ? config : undefined,
@@ -248,6 +252,7 @@ export class OAuthFlowService {
         authorizationScopes.join(auth.scopeSeparator ?? " "),
       );
     }
+    if (pending.identityNonce) authorizationUrl.searchParams.set("nonce", pending.identityNonce);
     if (pkceCodeVerifier) {
       authorizationUrl.searchParams.set("code_challenge", createPkceCodeChallenge(pkceCodeVerifier));
       authorizationUrl.searchParams.set("code_challenge_method", auth.pkce?.method ?? "S256");
@@ -335,11 +340,19 @@ export class OAuthFlowService {
           }
         },
       );
+      const { idToken, ...tokens } = tokenResponse;
+      if (isMicrosoftService(pending.service) && pending.identityNonce) {
+        tokens.metadata.microsoftIdentity = await verifyMicrosoftIdentity(
+          idToken,
+          config.clientId,
+          pending.identityNonce,
+        );
+      }
       const refreshParameters = readCallbackParameters(auth.tokenRequestCallbackParameters, input.callbackParameters);
       const providerSecret = mergeOAuthProviderSecret(tokenResponse.providerSecret, refreshParameters);
       const oauthCredential = {
         authType: "oauth2" as const,
-        ...tokenResponse,
+        ...tokens,
         profile: {
           accountId: "oauth2",
           displayName: "OAuth Credential",

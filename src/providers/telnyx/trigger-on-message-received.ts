@@ -46,8 +46,15 @@ export const telnyxMessageReceived: IntegrationDefinition = {
     }
 
     const data = optionalRecord(optionalRecord(context.payload)?.data);
-    if (data == null || optionalString(data.event_type) != "message.received") {
-      return ignored("Only Telnyx inbound message events are supported.");
+    if (data == null) {
+      return ignored("The Telnyx event envelope is missing.");
+    }
+    const eventType = optionalString(data.event_type);
+    if (eventType == "message.sent" || eventType == "message.finalized") {
+      return readDeliveryEvent(data);
+    }
+    if (eventType != "message.received") {
+      return ignored("Only Telnyx message and delivery events are supported.");
     }
 
     const message = optionalRecord(data.payload);
@@ -62,6 +69,7 @@ export const telnyxMessageReceived: IntegrationDefinition = {
       dedupeKey: optionalString(data.id) ?? messageId,
       outcome: "event",
       outputs: {
+        kind: "message",
         messageId,
         from,
         to,
@@ -135,6 +143,76 @@ function readFirstToNumber(value: unknown): string | undefined {
     if (number != null) return number;
   }
   return;
+}
+
+interface TelnyxDeliveryTarget {
+  readonly status?: string;
+}
+
+function readFirstToStatus(value: unknown): TelnyxDeliveryTarget | undefined {
+  if (!Array.isArray(value)) return;
+  for (const entry of value) {
+    const record = optionalRecord(entry);
+    if (record == null) continue;
+    if (optionalString(record.phone_number) == null) continue;
+    return { status: optionalString(record.status) };
+  }
+  return;
+}
+
+interface TelnyxDeliveryError {
+  readonly code?: string;
+  readonly title?: string;
+  readonly detail?: string;
+}
+
+function readErrors(value: unknown): TelnyxDeliveryError[] {
+  if (!Array.isArray(value)) return [];
+  const errors: TelnyxDeliveryError[] = [];
+  for (const entry of value) {
+    const record = optionalRecord(entry);
+    if (record == null) continue;
+    errors.push({
+      code: optionalString(record.code),
+      title: optionalString(record.title),
+      detail: optionalString(record.detail),
+    });
+  }
+  return errors;
+}
+
+/**
+ * Telnyx reports outbound progress as `message.sent` and the terminal outcome
+ * as `message.finalized`. Both carry `payload.id` (the outbound message id),
+ * so the host can match the event to the reply it stored after sending.
+ */
+function readDeliveryEvent(data: Record<string, unknown>): IntegrationReceiveResult {
+  const payload = optionalRecord(data.payload);
+  const messageId = optionalString(payload?.id);
+  const target = readFirstToStatus(payload?.to);
+  if (messageId == null || target?.status == null) {
+    return ignored("The Telnyx delivery event identity is missing.");
+  }
+  const errors = readErrors(payload?.errors);
+  const first = errors[0];
+  const cost = optionalRecord(payload?.cost);
+
+  return {
+    dedupeKey: optionalString(data.id) ?? messageId,
+    outcome: "event",
+    outputs: {
+      kind: "delivery",
+      messageId,
+      status: target.status,
+      errorCode: first?.code ?? null,
+      errorTitle: first?.title ?? null,
+      errorDetail: first?.detail ?? null,
+      encoding: optionalString(payload?.encoding) ?? null,
+      parts: optionalInteger(payload?.parts) ?? null,
+      costAmount: optionalString(cost?.amount) ?? null,
+      costCurrency: optionalString(cost?.currency) ?? null,
+    },
+  };
 }
 
 function readMedia(value: unknown): JsonValue[] {

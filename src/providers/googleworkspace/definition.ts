@@ -1,5 +1,7 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
+import { gmailComposeScope } from "../gmail/scopes.ts";
+
 export const workspaceScopes: string[] = [
   "openid",
   "email",
@@ -8,6 +10,7 @@ export const workspaceScopes: string[] = [
   "https://www.googleapis.com/auth/calendar.readonly",
   "https://www.googleapis.com/auth/gmail.send",
   "https://www.googleapis.com/auth/calendar.events",
+  gmailComposeScope,
 ];
 
 /** Consent broker only. Actions use the separately owned Gmail/Calendar connections. */
@@ -27,9 +30,16 @@ export const provider: ProviderDefinition = {
       authorizationParams: { access_type: "offline", prompt: "consent" },
       authorizationOptions: workspaceScopes.map((id, i) => ({
         id,
-        label: ["Identity", "Email address", "Profile", "Read email", "Read calendars", "Send email", "Edit events"][
-          i
-        ]!,
+        label: [
+          "Identity",
+          "Email address",
+          "Profile",
+          "Read email",
+          "Read calendars",
+          "Send email",
+          "Edit events",
+          "Manage drafts and send email",
+        ][i]!,
         description: "Optional Google permission. You can decline access and continue.",
         required: false,
         defaultSelected: i < 5,

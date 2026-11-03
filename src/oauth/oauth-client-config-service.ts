@@ -96,6 +96,13 @@ export class OAuthClientConfigService {
 
   async listConfigs(): Promise<OAuthClientConfigSummary[]> {
     const configured = new Map((await this.store.list()).map((config) => [config.service, config]));
+    if (
+      !configured.has("microsoft365") &&
+      this.listOAuthProviders().some((provider) => provider.service === "microsoft365")
+    ) {
+      const broker = await this.getConfig("microsoft365");
+      if (broker) configured.set("microsoft365", broker);
+    }
     return this.listOAuthProviders()
       .map((provider) =>
         this.toSummary(
@@ -108,17 +115,30 @@ export class OAuthClientConfigService {
   }
 
   async getSummary(service: string): Promise<OAuthClientConfigSummary> {
-    return this.toSummary(
-      service,
-      this.getOAuthDefinition(service),
-      normalizeStoredOAuthClientConfig(await this.store.get(service)),
-    );
+    return this.toSummary(service, this.getOAuthDefinition(service), await this.getConfig(service));
   }
 
   async getConfig(service: string): Promise<OAuthClientConfig | undefined> {
     this.getOAuthDefinition(service);
     const configured = normalizeStoredOAuthClientConfig(await this.store.get(service));
-    if (configured || service !== "googleworkspace") return configured;
+    if (configured) return configured;
+    if (service === "microsoft365") {
+      const mail = normalizeStoredOAuthClientConfig(await this.store.get("outlook"));
+      const calendar = normalizeStoredOAuthClientConfig(await this.store.get("outlook_calendar"));
+      if (
+        !mail ||
+        !calendar ||
+        mail.clientId !== calendar.clientId ||
+        mail.clientSecret !== calendar.clientSecret ||
+        mail.extra.tenant !== calendar.extra.tenant
+      )
+        return undefined;
+      return this.normalizeConfig(service, {
+        ...mail,
+        requestedScopes: this.getOAuthDefinition(service).scopes,
+      });
+    }
+    if (service !== "googleworkspace") return undefined;
     // Reuse the existing Google app, with a narrow default; never alter its Gmail configuration.
     const gmail = normalizeStoredOAuthClientConfig(await this.store.get("gmail"));
     return gmail

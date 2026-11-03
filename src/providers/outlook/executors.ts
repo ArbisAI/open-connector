@@ -5,6 +5,7 @@ import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { OAuthProviderContext } from "../provider-runtime.ts";
 
 import { compactObject, requiredRecord } from "../../core/cast.ts";
+import { microsoftProfile } from "../../oauth/microsoft-profile.ts";
 import {
   defineOAuthProviderExecutors,
   defineProviderProxy,
@@ -77,32 +78,8 @@ const outlookActionHandlers: ProviderActionHandlers<"outlook", OutlookActionHand
 export const executors: ProviderExecutors = defineOAuthProviderExecutors("outlook", outlookActionHandlers);
 
 export const credentialValidators: CredentialValidators = {
-  async oauth2(input, { fetcher }) {
-    const profile = await outlookJsonRequest<{
-      id?: unknown;
-      displayName?: unknown;
-      mail?: unknown;
-      userPrincipalName?: unknown;
-    }>("me", {
-      accessToken: input.accessToken,
-      fetcher,
-      query: {
-        $select: ["id", "displayName", "mail", "userPrincipalName"].join(","),
-      },
-    });
-    const accountId = requiredString(profile.id, "outlook current account id");
-    const displayName = typeof profile.displayName === "string" ? profile.displayName : undefined;
-    const mail = typeof profile.mail === "string" ? profile.mail : undefined;
-    const userPrincipalName = typeof profile.userPrincipalName === "string" ? profile.userPrincipalName : undefined;
-    return {
-      profile: {
-        accountId,
-        displayName: mail ?? userPrincipalName ?? displayName ?? accountId,
-      },
-      metadata: {
-        currentAccount: profile,
-      },
-    };
+  async oauth2(input, options) {
+    return { profile: await microsoftProfile(input, options) };
   },
 };
 

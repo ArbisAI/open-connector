@@ -6,6 +6,7 @@ import type { OAuthTokenResult } from "./oauth-token.ts";
 import { ConnectionError } from "../connection-service.ts";
 import { optionalRecord, stringRecord } from "../core/cast.ts";
 import { providerFetch } from "../providers/provider-runtime.ts";
+import { isMicrosoftService, verifyMicrosoftIdentity } from "./microsoft-identity.ts";
 import { readOAuthClientConfigMetadata } from "./oauth-client-config-service.ts";
 import { expiresAtFromLifetime, requestRefreshToken, requestTokenRevocation } from "./oauth-token.ts";
 
@@ -54,8 +55,10 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
     }
 
     const refreshToken = credential.refreshToken ?? "";
-    const createError = (message: string): ConnectionError =>
-      new ConnectionError("oauth_token_refresh_failed", message);
+    const createError = (message: string, providerCode?: string): ConnectionError =>
+      providerCode === "invalid_grant"
+        ? new ConnectionError("oauth_reauth_required", "Approve access again to reconnect this account.")
+        : new ConnectionError("oauth_token_refresh_failed", message);
     const providerOAuth = await this.providerLoader?.loadProviderOAuthRuntime?.(service);
     let refreshed: OAuthTokenResult;
     if (providerOAuth?.refreshAccessToken) {
@@ -91,8 +94,34 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
         ? credential.metadata.expires_in
         : refreshed.metadata.expires_in;
 
+    const { idToken, ...tokens } = refreshed;
+    if (isMicrosoftService(service) && idToken) {
+      const identity = await verifyMicrosoftIdentity(idToken, config.clientId, undefined);
+      if (
+        identity.tenantId !== credential.profile.microsoftTenantId ||
+        identity.objectId !== credential.profile.microsoftObjectId
+      )
+        throw new ConnectionError(
+          "oauth_reauth_required",
+          "Microsoft returned a different account during refresh. Reconnect Microsoft.",
+        );
+    }
+    const google = service === "gmail" || service === "googlecalendar" || service === "googleworkspace";
+    const microsoft = isMicrosoftService(service);
+    const scope = refreshed.metadata.scope;
+    let grantedScopes = credential.profile.grantedScopes;
+    if ((google || microsoft) && typeof scope === "string") {
+      // A reported grant replaces the old one, including removed permissions and an empty grant.
+      grantedScopes = scope.split(/\s+/).filter(Boolean);
+      if (microsoft)
+        grantedScopes = grantedScopes.map((value) => value.replace(/^https:\/\/graph.microsoft.com\//i, ""));
+    }
+    const metadata = { ...credential.metadata, ...refreshed.metadata };
+    // Google may omit scope on refresh. Keep the last provider-reported value so
+    // later profile validation agrees with the preserved grant, never requested scopes.
+    if (google && typeof scope !== "string") metadata.scope = credential.metadata.scope;
     return {
-      ...refreshed,
+      ...tokens,
       authType: "oauth2",
       refreshToken: refreshed.refreshToken ?? credential.refreshToken,
       // `expires_in` is optional on a refresh response, and a credential without an
@@ -103,10 +132,9 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       // the stored token would look expired immediately and refresh on every call.
       expiresAt: refreshed.expiresAt ?? expiresAtFromLifetime(expiresIn),
       providerSecret: refreshed.providerSecret ?? credential.providerSecret,
-      profile: credential.profile,
+      profile: { ...credential.profile, grantedScopes },
       metadata: {
-        ...credential.metadata,
-        ...refreshed.metadata,
+        ...metadata,
         // Refresh rotates tokens within the existing authorization, including legacy absence.
         oauthAuthorizationId: credential.metadata.oauthAuthorizationId,
         expires_in: expiresIn,

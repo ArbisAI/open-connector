@@ -59,7 +59,7 @@ describe("saved provider approvals", () => {
     expect(preview.fields.find((field) => field.key === "to")?.value).toContain("maya@example.com");
     expect(preview.fields.find((field) => field.key === "to")?.value).toContain("leo@example.com");
     expect(preview.fields.find((field) => field.key === "bcc")?.value).toBe("bcc@example.com");
-    expect(preview.body).toBe(input.body.trim());
+    expect(preview.body).toBe(input.body);
     expect(JSON.stringify(saved)).not.toContain("secret");
     await run(approvedHttpFetch(transport as typeof fetch, saved));
     expect(transport).toHaveBeenCalledTimes(1);

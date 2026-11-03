@@ -106,6 +106,7 @@ describe("telnyxMessageReceived.receive", () => {
       dedupeKey: "event-1",
       outcome: "event",
       outputs: {
+        kind: "message",
         messageId: "message-1",
         from: "+13125550001",
         to: "+17735550002",
@@ -130,6 +131,7 @@ describe("telnyxMessageReceived.receive", () => {
       dedupeKey: "event-1",
       outcome: "event",
       outputs: {
+        kind: "message",
         messageId: "message-1",
         from: "+13125550001",
         to: "+17735550002",
@@ -152,16 +154,91 @@ describe("telnyxMessageReceived.receive", () => {
     await expect(telnyxMessageReceived.receive(receiveContext(body, "not base64"))).resolves.toEqual(refused);
   });
 
-  it("ignores non-message events and signed messages without identity", async () => {
-    const finalized = JSON.stringify({ data: { event_type: "message.finalized", id: "event-2", payload: {} } });
-    await expect(telnyxMessageReceived.receive(receiveContext(finalized, await sign(finalized)))).resolves.toEqual({
+  it("ignores unknown events and signed messages without identity", async () => {
+    const other = JSON.stringify({ data: { event_type: "message.updated", id: "event-2", payload: {} } });
+    await expect(telnyxMessageReceived.receive(receiveContext(other, await sign(other)))).resolves.toEqual({
       outcome: "ignored",
-      reason: "Only Telnyx inbound message events are supported.",
+      reason: "Only Telnyx message and delivery events are supported.",
     });
     const missing = JSON.stringify({ data: { event_type: "message.received", id: "event-3", payload: { to: [] } } });
     await expect(telnyxMessageReceived.receive(receiveContext(missing, await sign(missing)))).resolves.toEqual({
       outcome: "ignored",
       reason: "The Telnyx inbound message identity is missing.",
+    });
+  });
+
+  it("emits a delivery status for message.finalized", async () => {
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.finalized",
+        id: "event-4",
+        payload: {
+          id: "outbound-1",
+          to: [{ phone_number: "+17735550002", status: "delivery_failed" }],
+          errors: [
+            {
+              code: "40300",
+              title: "Destination number unreachable",
+              detail: "The destination number is not reachable on the carrier network.",
+            },
+          ],
+          encoding: "GSM-7",
+          parts: 2,
+          cost: { amount: "0.0051", currency: "USD" },
+        },
+      },
+    });
+    await expect(telnyxMessageReceived.receive(receiveContext(body, await sign(body)))).resolves.toEqual({
+      dedupeKey: "event-4",
+      outcome: "event",
+      outputs: {
+        kind: "delivery",
+        messageId: "outbound-1",
+        status: "delivery_failed",
+        errorCode: "40300",
+        errorTitle: "Destination number unreachable",
+        errorDetail: "The destination number is not reachable on the carrier network.",
+        encoding: "GSM-7",
+        parts: 2,
+        costAmount: "0.0051",
+        costCurrency: "USD",
+      },
+    });
+  });
+
+  it("emits a non-terminal delivery status for message.sent", async () => {
+    const body = JSON.stringify({
+      data: {
+        event_type: "message.sent",
+        id: "event-5",
+        payload: { id: "outbound-2", to: [{ phone_number: "+17735550002", status: "sent" }] },
+      },
+    });
+    await expect(telnyxMessageReceived.receive(receiveContext(body, await sign(body)))).resolves.toEqual({
+      dedupeKey: "event-5",
+      outcome: "event",
+      outputs: {
+        kind: "delivery",
+        messageId: "outbound-2",
+        status: "sent",
+        errorCode: null,
+        errorTitle: null,
+        errorDetail: null,
+        encoding: null,
+        parts: null,
+        costAmount: null,
+        costCurrency: null,
+      },
+    });
+  });
+
+  it("ignores a delivery event without a message id", async () => {
+    const body = JSON.stringify({
+      data: { event_type: "message.finalized", id: "event-6", payload: { to: [] } },
+    });
+    await expect(telnyxMessageReceived.receive(receiveContext(body, await sign(body)))).resolves.toEqual({
+      outcome: "ignored",
+      reason: "The Telnyx delivery event identity is missing.",
     });
   });
 });

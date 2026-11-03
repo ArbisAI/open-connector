@@ -434,6 +434,15 @@ export interface CredentialValidatorOptions {
 export type CredentialProfile = {
   /** Provider-side account, user, bot, workspace, or token identifier. */
   accountId: string;
+  /** Verified Google identity used by managed-company admission. */
+  microsoftTenantId?: string;
+  microsoftObjectId?: string;
+  microsoftPrincipalName?: string;
+  microsoftMail?: string;
+  microsoftUserType?: string;
+  googleSubject?: string;
+  hostedDomain?: string;
+  emailVerified?: boolean;
   /** Human-readable label for local users and agents. */
   displayName: string;
   /** Provider-native scopes granted to this credential, when known. */
@@ -446,6 +455,14 @@ export type CredentialProfile = {
 export type CredentialProfileInput = {
   /** Provider-side account, user, bot, workspace, or token identifier. */
   accountId?: string;
+  microsoftTenantId?: string;
+  microsoftObjectId?: string;
+  microsoftPrincipalName?: string;
+  microsoftMail?: string;
+  microsoftUserType?: string;
+  googleSubject?: string;
+  hostedDomain?: string;
+  emailVerified?: boolean;
   /** Human-readable label for local users and agents. */
   displayName?: string;
   /** Provider-native scopes granted to this credential, when known. */
