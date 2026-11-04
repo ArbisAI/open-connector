@@ -4,6 +4,7 @@ import type { ActionPolicyDecision, ActionPolicySnapshot } from "../../core/acti
 import type { ProviderHttpDispatchOptions } from "../../core/provider-http-dispatch.ts";
 import type { RuntimeLogger, ExecutionContext, ExecutionResult, TransitFileWriter } from "../../core/types.ts";
 import type { MarketplaceService } from "../../marketplace/marketplace-service.ts";
+import type { PreparedAction } from "../../providers/approval.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { SaasExecutionService } from "../../saas/saas-execution-service.ts";
 import type { IRunLogStore, RunLog, RunLogCaller, RunLogListInput, RunLogPage } from "../storage/runtime-store.ts";
@@ -11,12 +12,15 @@ import type { IRunLogStore, RunLog, RunLogCaller, RunLogListInput, RunLogPage } 
 import { ConnectionError } from "../../connection-service.ts";
 import { executeAction as executeProviderAction } from "../../core/execution.ts";
 import { withProviderHttpDispatch } from "../../core/provider-http-dispatch.ts";
+import { approvalInputHash, isCurrentPreparedApproval, supportsPreparedAction } from "../../providers/approval.ts";
 import {
   ProviderDispatchRequestError,
   toProviderExecutionError,
   withProviderHttpDispatchResult,
 } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
+import { buildActionPreview, resolvePreviewFolders } from "./action-preview.ts";
+import { authorizeCompanyExecution, companyDispatchOptions } from "./company-authorization.ts";
 import { safeRunLogError, summarizeForRunLog } from "./run-log-summary.ts";
 
 export interface ActionRunnerOptions {
@@ -34,6 +38,8 @@ export interface ActionRunnerOptions {
 export interface RunActionInput {
   actionId: string;
   input: unknown;
+  prepare?: boolean;
+  prepared?: PreparedAction;
   caller: RunLogCaller;
   connectionName?: string;
   connectionId?: string;
@@ -59,7 +65,7 @@ export class ActionRunner {
   private readonly options: ActionRunnerOptions;
 
   constructor(options: ActionRunnerOptions) {
-    this.options = options;
+    this.options = { ...options, providerHttpDispatch: companyDispatchOptions(options.providerHttpDispatch) };
   }
 
   async run(input: RunActionInput): Promise<ActionRunResult | undefined> {
@@ -69,6 +75,78 @@ export class ActionRunner {
       () => this.runAction(input),
       this.options.providerHttpDispatch,
     );
+  }
+
+  async prepare(input: RunActionInput): Promise<ActionRunResult | undefined> {
+    const run = await this.run({ ...input, prepare: true });
+    if (!run?.result.ok) return run;
+    const action = this.options.catalog.actionsById.get(input.actionId)!;
+    const prepared = run.result.output as PreparedAction;
+    prepared.createdAt = Date.now();
+    const fields = input.input as Record<string, unknown>;
+    const reference =
+      action.service === "outlook" && fields.messageId
+        ? { actionId: "outlook.get_message", input: { messageId: fields.messageId } }
+        : action.service === "outlook_calendar" && fields.eventId
+          ? { actionId: "outlook_calendar.get_event", input: { eventId: fields.eventId } }
+          : action.service === "googlecalendar" && fields.eventId
+            ? {
+                actionId: "googlecalendar.get_event",
+                input: { calendarId: fields.calendarId ?? "primary", eventId: fields.eventId },
+              }
+            : action.service === "googledrive" && fields.fileId
+              ? { actionId: "googledrive.files.get", input: { fileId: fields.fileId } }
+              : action.service === "notion" && fields.pageId
+                ? { actionId: "notion.retrieve_page", input: { pageId: fields.pageId } }
+                : action.service === "notion" && fields.blockId
+                  ? { actionId: "notion.retrieve_block", input: { blockId: fields.blockId } }
+                  : undefined;
+    let current: unknown;
+    if (reference && action.service === "googlecalendar") {
+      const saved = prepared.reads.find((read) =>
+        new URL(read.url).pathname.endsWith(`/events/${encodeURIComponent(String(fields.eventId))}`),
+      );
+      if (saved) current = JSON.parse(Buffer.from(saved.bodyBase64, "base64").toString("utf8"));
+    }
+    if (current === undefined && reference && this.options.catalog.actionsById.has(reference.actionId)) {
+      const read = await this.run({ ...input, ...reference, prepare: false, prepared: undefined });
+      if (read?.result.ok) current = read.result.output;
+      else if (action.service === "outlook" || action.service === "outlook_calendar") {
+        return {
+          ...run,
+          result: read?.result ?? {
+            ok: false,
+            error: {
+              code: "provider_error",
+              message: "The Outlook message or event could not be read for review. Retry before approving this action.",
+            },
+          },
+        };
+      }
+    }
+    if (
+      action.service === "googlecalendar" &&
+      ["googlecalendar.update_event", "googlecalendar.patch_event"].includes(action.id) &&
+      prepared.request
+    ) {
+      const etag = (current as { etag?: string } | undefined)?.etag;
+      if (etag) prepared.request.headers["if-match"] = etag;
+    }
+    const preview = await buildActionPreview(action, run.connection, input.input, prepared, current);
+    if (this.options.catalog.actionsById.has("googledrive.files.get")) {
+      await resolvePreviewFolders(preview, async (fileId) => {
+        const read = await this.run({
+          ...input,
+          connectionId: run.connection?.id ?? input.connectionId,
+          actionId: "googledrive.files.get",
+          input: { fileId, fields: "id,name,mimeType" },
+          prepare: false,
+          prepared: undefined,
+        });
+        return read?.result.ok ? read.result.output : undefined;
+      });
+    }
+    return { ...run, result: { ok: true, output: { prepared, preview } } };
   }
 
   private async runAction(input: RunActionInput): Promise<ActionRunResult | undefined> {
@@ -97,7 +175,10 @@ export class ActionRunner {
     const startedAt = new Date(startedAtMs).toISOString();
     let policy: ActionPolicyDecision = input.policy.evaluate(action);
     let connection: ExecutionConnection | undefined;
-    let result: ExecutionResult;
+    let result: ExecutionResult = {
+      ok: false,
+      error: { code: "internal_error", message: "Action execution did not produce a result." },
+    };
     let remoteExecutionId: string | undefined;
     let failureStatus: SaasError["status"] | undefined;
     let retryAfter: string | undefined;
@@ -127,11 +208,19 @@ export class ActionRunner {
             },
           };
         } else {
-          connection = await this.options.connections.resolveForExecution(
-            action.service,
-            input.connectionName,
-            input.connectionId,
-          );
+          const blocked = await this.companyOrApprovalBlock(action, input, summary?.id);
+          if (blocked) {
+            failureStatus = blocked.failureStatus;
+            retryAfter = blocked.retryAfter;
+            result = blocked.result;
+          } else
+            connection = await this.options.connections.resolveForExecution(
+              action.service,
+              input.connectionName,
+              input.connectionId,
+            );
+        }
+        if (connection) {
           input.signal?.throwIfAborted();
           const targetPolicy =
             connection.summary?.authType === "no_auth"
@@ -141,6 +230,15 @@ export class ActionRunner {
             policy = targetPolicy;
             throw new ConnectionError(targetPolicy.code, targetPolicy.message);
           }
+          const resolvedBlock = await this.companyOrApprovalBlock(action, input, connection.summary?.id, true);
+          if (resolvedBlock) {
+            connection = undefined;
+            failureStatus = resolvedBlock.failureStatus;
+            retryAfter = resolvedBlock.retryAfter;
+            result = resolvedBlock.result;
+          }
+        }
+        if (connection) {
           const executor =
             action.execution.locallyExecutable && connection.kind === "local"
               ? await this.options.providerLoader.loadActionExecutor(
@@ -164,28 +262,38 @@ export class ActionRunner {
             () =>
               executeProviderAction(
                 action,
-                saasReference
-                  ? async (actionInput) => {
-                      if (!this.options.saas)
-                        throw new SaasError("oauth_source_unavailable", "SaaS execution is unavailable.", 503);
-                      const remote = await this.options.saas.executeAction(
-                        saasReference,
-                        action.service,
-                        action.id,
-                        actionInput,
-                        input.signal,
-                      );
-                      remoteExecutionId = remote.executionId;
-                      return { ok: true, output: remote.output };
-                    }
-                  : resolvedConnection.kind === "marketplace"
-                    ? (actionInput) => this.options.marketplace!.execute(action.id, actionInput, input.signal)
-                    : executor,
+                input.prepare &&
+                  ((executor && !supportsPreparedAction(action.id)) || resolvedConnection.kind !== "local")
+                  ? async () => ({ ok: true, output: { reads: [] } })
+                  : saasReference
+                    ? async (actionInput) => {
+                        if (!this.options.saas)
+                          throw new SaasError("oauth_source_unavailable", "SaaS execution is unavailable.", 503);
+                        const remote = await this.options.saas.executeAction(
+                          saasReference,
+                          action.service,
+                          action.id,
+                          actionInput,
+                          input.signal,
+                        );
+                        remoteExecutionId = remote.executionId;
+                        return { ok: true, output: remote.output };
+                      }
+                    : resolvedConnection.kind === "marketplace"
+                      ? (actionInput) => this.options.marketplace!.execute(action.id, actionInput, input.signal)
+                      : executor,
                 input.input,
-                this.createExecutionContext(
-                  resolvedConnection.kind === "local" ? resolvedConnection.getCredential : async () => undefined,
-                  input.signal,
-                ),
+                {
+                  ...this.createExecutionContext(
+                    resolvedConnection.kind === "local" ? resolvedConnection.getCredential : async () => undefined,
+                    input.signal,
+                  ),
+                  approval: input.prepare
+                    ? { mode: "prepare", actionId: action.id }
+                    : input.prepared
+                      ? { mode: "execute", prepared: input.prepared }
+                      : undefined,
+                },
               ),
             this.options.providerHttpDispatch,
           );
@@ -220,6 +328,20 @@ export class ActionRunner {
                 };
         }
       }
+    }
+    if (input.prepare) {
+      if (result.ok)
+        result = {
+          ok: true,
+          output: {
+            ...(result.output as object),
+            version: 1,
+            actionId: action.id,
+            connectionId: connection?.summary?.id ?? "",
+            inputHash: approvalInputHash(input.input),
+          },
+        };
+      return { executionId, auditPersisted: false, result, connection: connection?.summary };
     }
     const completedAtMs = Date.now();
     const durationMs = completedAtMs - startedAtMs;
@@ -288,6 +410,69 @@ export class ActionRunner {
 
   getRun(id: string): Promise<RunLog | undefined> {
     return this.options.runs.get(id);
+  }
+
+  private async companyOrApprovalBlock(
+    action: { id: string; service: string },
+    input: RunActionInput,
+    connectionId: string | undefined,
+    matchPrepared = false,
+  ): Promise<{ result: ExecutionResult; failureStatus?: 503; retryAfter?: string } | undefined> {
+    const company = await authorizeCompanyExecution({
+      operation: "action",
+      service: action.service,
+      connectionId,
+      actionId: action.id,
+      signal: input.signal,
+    });
+    if (!company.ok) {
+      return {
+        failureStatus: company.reason === "unavailable" ? 503 : undefined,
+        retryAfter: company.reason === "unavailable" ? String(company.retryAfterSeconds) : undefined,
+        result: {
+          ok: false,
+          error: {
+            code: company.reason === "unavailable" ? "rate_limited" : "forbidden",
+            message:
+              company.reason === "unavailable"
+                ? "Company authorization is temporarily unavailable."
+                : "Current company access is required.",
+          },
+        },
+      };
+    }
+    if (!input.prepare && supportsPreparedAction(action.id) && !isCurrentPreparedApproval(input.prepared)) {
+      return {
+        result: {
+          ok: false,
+          error: {
+            code: "approval_expired",
+            message: "A current approval is required for this write.",
+            details: { outcome: "not_executed" },
+          },
+        },
+      };
+    }
+    if (
+      matchPrepared &&
+      input.prepared &&
+      (input.prepared.version !== 1 ||
+        input.prepared.actionId !== action.id ||
+        input.prepared.connectionId !== connectionId ||
+        input.prepared.inputHash !== approvalInputHash(input.input))
+    ) {
+      return {
+        result: {
+          ok: false,
+          error: {
+            code: "approval_expired",
+            message: "The saved approval no longer matches this action.",
+            details: { outcome: "not_executed" },
+          },
+        },
+      };
+    }
+    return undefined;
   }
 
   private createExecutionContext(

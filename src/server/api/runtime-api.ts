@@ -1,7 +1,7 @@
 import type { RuntimeActionDefinition, RuntimeProviderDefinition } from "../../catalog-store.ts";
 import type { ConnectionError, ConnectionSummary, ManagedConnectionSummary } from "../../connection-service.ts";
 import type { ProviderAuthSetup } from "../../core/provider-setup.ts";
-import type { ExecutionResult, ProviderScenario } from "../../core/types.ts";
+import type { CredentialDefinition, ExecutionResult, ProviderScenario } from "../../core/types.ts";
 import type { OAuthClientConfigSummary } from "../../oauth/oauth-client-config-service.ts";
 import type { TriggerPermission } from "../../triggers/metadata.ts";
 import type { Context } from "hono";
@@ -284,6 +284,7 @@ export function mapConnectionErrorStatus(error: ConnectionError): 400 | 404 | 40
   }
   if (
     error.code === "oauth_token_expired" ||
+    error.code === "oauth_reauth_required" ||
     error.code === "oauth_refresh_unavailable" ||
     error.code === "oauth_token_refresh_failed"
   ) {
@@ -320,7 +321,12 @@ function mapExecutionErrorStatus(code: string | undefined, details?: unknown): R
   if (code === "internal_error" || code === "provider_error" || code === "executor_unavailable") {
     return 500;
   }
-  if (code === "oauth_token_expired" || code === "oauth_refresh_unavailable" || code === "oauth_token_refresh_failed") {
+  if (
+    code === "oauth_reauth_required" ||
+    code === "oauth_token_expired" ||
+    code === "oauth_refresh_unavailable" ||
+    code === "oauth_token_refresh_failed"
+  ) {
     return 409;
   }
   if (code === "connection_not_found" || code === "unknown_service" || code === "unknown_action") {
@@ -361,12 +367,30 @@ export function serializeManagedConnection(connection: ManagedConnectionSummary)
   status: ManagedConnectionSummary["status"];
   providerAccountId: string;
   comment: string | null;
+  microsoftTenantId?: string;
+  microsoftObjectId?: string;
+  microsoftPrincipalName?: string;
+  microsoftMail?: string;
+  microsoftUserType?: string;
+  googleSubject?: string;
+  hostedDomain?: string;
+  emailVerified?: boolean;
+  grantedScopes: string[];
 } {
   return {
     ...serializeRuntimeConnectedApp(connection),
     status: connection.status,
     providerAccountId: connection.profile.accountId,
     comment: connection.comment,
+    microsoftTenantId: connection.profile.microsoftTenantId,
+    microsoftObjectId: connection.profile.microsoftObjectId,
+    microsoftPrincipalName: connection.profile.microsoftPrincipalName,
+    microsoftMail: connection.profile.microsoftMail,
+    microsoftUserType: connection.profile.microsoftUserType,
+    googleSubject: connection.profile.googleSubject,
+    hostedDomain: connection.profile.hostedDomain,
+    emailVerified: connection.profile.emailVerified,
+    grantedScopes: connection.profile.grantedScopes,
   };
 }
 
@@ -390,7 +414,15 @@ export function connectionManagementFailure(error: { code: string; message: stri
 export interface RuntimeProviderSetup {
   service: string;
   auth: ProviderAuthSetup[];
+  authMethods: RuntimeAuthMethod[];
   oauthClient?: RuntimeOAuthClientSetup;
+}
+
+export interface RuntimeAuthMethod {
+  type: "oauth" | "api_key" | "custom_credentials" | "no_auth";
+  configured: boolean;
+  unavailableReason: string | null;
+  fields: CredentialDefinition[];
 }
 
 interface RuntimeOAuthClientSetup {
@@ -411,6 +443,16 @@ export function serializeRuntimeProviderSetup(
   return {
     service: provider.service,
     auth: provider.auth.map(describeProviderAuth),
+    authMethods: provider.auth.map((auth): RuntimeAuthMethod => {
+      const described = describeProviderAuth(auth);
+      const configured = auth.type !== "oauth2" || oauth?.configured === true;
+      return {
+        type: auth.type === "oauth2" ? "oauth" : auth.type === "custom_credential" ? "custom_credentials" : auth.type,
+        configured,
+        unavailableReason: configured ? null : "OAuth application is not configured.",
+        fields: "fields" in described ? described.fields : [],
+      };
+    }),
     oauthClient: oauth
       ? {
           configured: oauth.configured,

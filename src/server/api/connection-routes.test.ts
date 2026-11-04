@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCatalogStore } from "../../catalog-store.ts";
 import { requestAuthorizationCodeToken } from "../../oauth/oauth-token.ts";
 import { provider as githubProvider } from "../../providers/github/definition.ts";
+import { provider as gmailProvider } from "../../providers/gmail/definition.ts";
+import { provider as googleWorkspaceProvider } from "../../providers/googleworkspace/definition.ts";
+import { credentialValidators as googleWorkspaceValidators } from "../../providers/googleworkspace/executors.ts";
 import { ProviderLoader } from "../../providers/provider-loader.ts";
 import { provider as slackProvider } from "../../providers/slack/definition.ts";
 import { slackCredentialValidators } from "../../providers/slack/runtime.ts";
@@ -90,6 +93,84 @@ async function setup(
   return { app, database, call, start };
 }
 
+it.each([
+  "openid email profile https://www.googleapis.com/auth/gmail.readonly",
+  "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/calendar.readonly",
+])("retains Google work identity from consent through the management API (%s)", async (scope) => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : String(input);
+      expect(url).toBe("https://openidconnect.googleapis.com/v1/userinfo");
+      return Response.json({
+        sub: "verified-google-account",
+        email: "Admin@Acme.test",
+        email_verified: true,
+        hd: "acme.test",
+      });
+    }),
+  );
+  const { call, database } = await setup(
+    async () => ({ accessToken: "google-credential-sentinel", tokenType: "Bearer", metadata: { scope } }),
+    { adminToken: "management-test-token", runtimeToken: "runtime-test-token" },
+    { ...googleWorkspaceProvider, service: "example" },
+    googleWorkspaceValidators,
+  );
+  const started = await call("/v1/connections/example/connect", {
+    authorizationOptionIds: [
+      "openid",
+      "email",
+      "profile",
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/calendar.readonly",
+    ],
+  });
+  expect(started.status).toBe(200);
+  const request = (await started.json()).data;
+  await call(`/oauth/callback?state=${request.stateHandle}&code=provider-test-code`);
+  const outcome = (await (await call(`/v1/connection-requests/${request.connectionRequestId}`)).json()).data;
+  expect(outcome.status).toBe("connected");
+  const response = await call(`/v1/connections/by-id/${outcome.appId}`);
+  expect(response.status).toBe(200);
+  const body = await response.text();
+  expect(body).not.toContain("google-credential-sentinel");
+  expect(JSON.parse(body).data).toMatchObject({
+    providerAccountId: "admin@acme.test",
+    googleSubject: "verified-google-account",
+    hostedDomain: "acme.test",
+    emailVerified: true,
+    grantedScopes: scope.split(" "),
+  });
+  const [stored] = await database.connectionStore.list();
+  expect(stored.source).not.toBe("saas");
+  if (stored.source === "saas" || stored.credential.authType === "no_auth")
+    throw new Error("Expected local OAuth credential");
+  expect(stored.credential.profile.googleSubject).toBe("verified-google-account");
+  expect((await call(`/v1/connections/by-id/${outcome.appId}`, undefined, "runtime-test-token")).status).toBe(401);
+});
+
+it("looks up an exact alias without listing credentials or falling back to a default", async () => {
+  const { call, database } = await setup(undefined, { adminToken: "admin", runtimeToken: "runtime" });
+  const created = await (
+    await call("/v1/connections/example/connect/api-key", {
+      apiKey: "credential-sentinel",
+      connectionName: "nexo-recovery",
+    })
+  ).json();
+  const list = vi.spyOn(database.connectionStore, "list");
+  const response = await call("/v1/connections/by-alias/example/nexo-recovery");
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  expect(JSON.parse(text).data.id).toBe(created.data.id);
+  expect(text).not.toContain("credential-sentinel");
+  expect(list).not.toHaveBeenCalled();
+  const missing = await call("/v1/connections/by-alias/example/missing");
+  expect(missing.status).toBe(404);
+  expect((await missing.json()).errorCode).toBe("app_not_found");
+  expect((await call("/v1/connections/by-alias/another/nexo-recovery")).status).toBe(404);
+  expect((await call("/v1/connections/by-alias/example/nexo-recovery", undefined, "runtime")).status).toBe(401);
+});
+
 it("reports console OAuth validation failure without saving a connection or losing client configuration", async () => {
   const { call, database } = await setup(undefined, {}, provider, {
     async oauth2() {
@@ -124,6 +205,35 @@ it("marks a managed OAuth request failed when credential validation fails", asyn
 });
 
 describe("shared personal connection API", () => {
+  it("retains a caller-generated durable alias for lost-response recovery", async () => {
+    const { call } = await setup();
+    const created = await call("/v1/connections/example/connect/api-key", {
+      apiKey: "secret-sentinel",
+      connectionName: "nexo-durable",
+    });
+    const data = (await created.json()).data;
+    expect(data.alias).toBe("nexo-durable");
+    const list = await (await call("/v1/connections")).json();
+    expect(list.data).toContainEqual(expect.objectContaining({ id: data.id, alias: "nexo-durable" }));
+    expect(JSON.stringify(list)).not.toContain("secret-sentinel");
+    expect(
+      (
+        await call(`/v1/connections/by-id/${data.id}/connect/api-key`, {
+          apiKey: "other",
+          connectionName: "other-alias",
+        })
+      ).status,
+    ).toBe(404);
+  });
+  it("deletes only the exact selected connection by ID", async () => {
+    const { app, call } = await setup();
+    const first = (await (await call("/v1/connections/example/connect/api-key", { apiKey: "first" })).json()).data;
+    const second = (await (await call("/v1/connections/example/connect/api-key", { apiKey: "second" })).json()).data;
+    expect((await app.request(`/v1/connections/by-id/${first.id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await call(`/v1/connections/by-id/${first.id}`)).status).toBe(404);
+    expect((await call(`/v1/connections/by-id/${second.id}`)).status).toBe(200);
+    expect((await app.request("/v1/connections/by-id/missing", { method: "DELETE" })).status).toBe(404);
+  });
   it("returns an independent request ID and persists the exact connected app after callback consumption", async () => {
     const { call, start, database } = await setup();
     const request = await start();
@@ -441,4 +551,28 @@ it("connects Slack using granted scopes from the nested user token response", as
   const connection = (await (await call(`/v1/connections/by-id/${result.appId}`)).json()).data;
   expect(connection.scopes).toEqual(["channels:read", "users:read"]);
   expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  [
+    "read, draft and send",
+    [
+      "openid",
+      "email",
+      "profile",
+      "https://www.googleapis.com/auth/gmail.readonly",
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/gmail.compose",
+    ],
+  ],
+  ["read only", ["openid", "email", "profile", "https://www.googleapis.com/auth/gmail.readonly"]],
+])("starts Gmail OAuth with the requested %s permissions", async (_label, authorizationOptionIds) => {
+  const { call } = await setup(undefined, {}, { ...gmailProvider, service: "example", actions: [], triggers: [] });
+  const response = await call("/v1/connections/example/connect", { authorizationOptionIds });
+  const payload = await response.json();
+  expect(response.status, JSON.stringify(payload)).toBe(200);
+  const url = new URL(payload.data.authorizationUrl);
+  const scopes = url.searchParams.get("scope")!.split(" ");
+  expect(scopes.sort()).toEqual([...authorizationOptionIds].sort());
+  expect(scopes).not.toContain("https://www.googleapis.com/auth/gmail.modify");
 });

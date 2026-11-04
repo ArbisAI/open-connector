@@ -1,6 +1,8 @@
 import type { ProviderDefinition } from "../../core/types.ts";
 
 import { telnyxActions } from "./actions.ts";
+import { snapshot as triggerSnapshot0_0 } from "./trigger-on-message-received.definition.ts";
+import { triggerPermissions } from "./trigger-permissions.ts";
 
 export const provider: ProviderDefinition = {
   service: "telnyx",
@@ -18,4 +20,6 @@ export const provider: ProviderDefinition = {
   ],
   homepageUrl: "https://telnyx.com/",
   actions: telnyxActions,
+  triggers: [triggerSnapshot0_0],
+  triggerPermissions,
 };

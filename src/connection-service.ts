@@ -152,6 +152,8 @@ export interface IConnectionStore {
   updateCredential(input: StoredLocalConnection, refresh?: boolean): Promise<boolean>;
   delete(service: string, connectionName: string): Promise<void>;
   list(): Promise<StoredConnection[]>;
+  /** One row by id. Optional so lightweight stores can fall back to list(). */
+  getById?(id: string): Promise<StoredConnection | undefined>;
 }
 
 interface ApiKeyCredentialValidationInput {
@@ -450,7 +452,19 @@ export class ConnectionService {
     connectionNameInput?: string,
     signal?: AbortSignal,
   ): Promise<ConnectionSummary> {
-    const storedCredential = await this.prepareOAuthCredential(service, credential, signal);
+    return this.savePreparedOAuthCredential(
+      service,
+      await this.prepareOAuthCredential(service, credential, signal),
+      connectionNameInput,
+    );
+  }
+
+  /** Persist a credential this service already validated. Callers must not pass an unvalidated parent grant. */
+  async savePreparedOAuthCredential(
+    service: string,
+    storedCredential: OAuthCredential,
+    connectionNameInput?: string,
+  ): Promise<ConnectionSummary> {
     const connectionName = normalizeConnectionName(connectionNameInput);
     const stored = await this.store.set(service, connectionName, storedCredential);
     return this.createStoredConnectionSummary(
@@ -498,7 +512,11 @@ export class ConnectionService {
   }
 
   async getStoredConnection(id: string): Promise<StoredConnection> {
-    const connection = (await this.store.list()).find((item) => item.id === id);
+    // Read only the selected row: list() decodes every credential, so one unreadable
+    // row would make every by-id lookup fail (phone Verify, 2026-10-19).
+    const connection = this.store.getById
+      ? await this.store.getById(id)
+      : (await this.store.list()).find((item) => item.id === id);
     if (!connection) throw new ConnectionError("connection_not_found", "Connection not found.");
     return connection;
   }
@@ -509,6 +527,12 @@ export class ConnectionService {
 
   async getManagedConnection(id: string): Promise<ManagedConnectionSummary> {
     return this.createManagedConnectionSummary(await this.getStoredConnection(id));
+  }
+
+  async getManagedConnectionByAlias(service: string, alias: string): Promise<ManagedConnectionSummary> {
+    const connection = await this.store.get(service, normalizeConnectionName(alias));
+    if (!connection) throw new ConnectionError("connection_not_found", "Connection not found.");
+    return this.createManagedConnectionSummary(connection);
   }
 
   private createManagedConnectionSummary(stored: StoredConnection): ManagedConnectionSummary {
@@ -529,7 +553,9 @@ export class ConnectionService {
     const credential = stored.credential;
     return {
       status:
-        credential.authType === "oauth2" && !credential.refreshToken && isOAuthCredentialExpired(credential)
+        credential.authType === "oauth2" &&
+        (credential.metadata.oauthReauthRequired === true ||
+          (!credential.refreshToken && isOAuthCredentialExpired(credential)))
           ? "reauth_required"
           : "active",
       ...this.createConfiguredConnectionSummary(
@@ -576,6 +602,20 @@ export class ConnectionService {
       throw new ConnectionError("connection_changed", "The connection changed during authorization.");
     }
     return { ...expected, credential };
+  }
+
+  /** Company access has already been denied by the authority. Keep failed revocations retryable. */
+  async disconnectForCompany(appId: string, revoke: boolean): Promise<void> {
+    const stored = await this.getStoredConnection(appId);
+    // Delete first. A store that refuses an active Trigger subscription must leave the grant intact.
+    await this.store.delete(stored.service, stored.connectionName);
+    if (!revoke) return;
+    const outcome = await this.revokeDeletedCredential(stored.service, stored.connectionName, stored);
+    if (outcome === "failed")
+      throw new ConnectionError(
+        "oauth_token_revocation_failed",
+        "Provider revocation could not be confirmed. Retry cleanup.",
+      );
   }
 
   async disconnect(
@@ -839,6 +879,9 @@ export class ConnectionService {
     credential: OAuthCredential,
   ): Promise<OAuthCredential> {
     const service = connection.service;
+    if (credential.metadata.oauthReauthRequired === true) {
+      throw new ConnectionError("oauth_reauth_required", "Approve access again to reconnect this account.");
+    }
     if (!isOAuthCredentialExpired(credential)) {
       return credential;
     }
@@ -880,11 +923,30 @@ export class ConnectionService {
     refresher: IOAuthCredentialRefresher,
   ): Promise<OAuthCredential> {
     const { id, revision, service, connectionName } = connection;
-    const nextCredential = await withProviderHttpDispatchResult(
-      { operation: "oauth", service, connectionId: id, connectionName },
-      () => refresher.refresh(service, credential),
-      this.providerHttpDispatch,
-    );
+    let nextCredential: OAuthCredential;
+    try {
+      nextCredential = await withProviderHttpDispatchResult(
+        { operation: "oauth", service, connectionId: id, connectionName },
+        () => refresher.refresh(service, credential),
+        this.providerHttpDispatch,
+      );
+    } catch (error) {
+      if (error instanceof ConnectionError && error.code === "oauth_reauth_required") {
+        // A late failure must not invalidate credentials saved by a concurrent reconnect.
+        const updated = await this.store.updateCredential(
+          {
+            id,
+            revision,
+            service,
+            connectionName,
+            credential: { ...credential, metadata: { ...credential.metadata, oauthReauthRequired: true } },
+          },
+          true,
+        );
+        if (!updated) throw new ConnectionError("connection_changed", "The connection changed. Retry the action.");
+      }
+      throw error;
+    }
     const updated = await this.store.updateCredential(
       {
         id,
@@ -1015,6 +1077,12 @@ export class ConnectionService {
       accountId,
       displayName,
       grantedScopes: normalizeGrantedScopes(grantedScopes),
+      ...verifiedGoogleIdentity(validation, previous),
+      microsoftTenantId: validation.profile?.microsoftTenantId,
+      microsoftObjectId: validation.profile?.microsoftObjectId,
+      microsoftPrincipalName: validation.profile?.microsoftPrincipalName,
+      microsoftMail: validation.profile?.microsoftMail,
+      microsoftUserType: validation.profile?.microsoftUserType,
     };
   }
 
@@ -1090,6 +1158,30 @@ export class ConnectionError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+/**
+ * Accept fresh verified Google identity, replacing an unverified OAuth placeholder.
+ * A previously verified account must still match this validation.
+ * An omitted or false emailVerified must not restore an older true.
+ */
+function verifiedGoogleIdentity(
+  validation: CredentialValidationResult,
+  previous?: PreviousCredentialRuntimeData,
+): Pick<CredentialProfile, "googleSubject" | "hostedDomain" | "emailVerified"> {
+  const profile = validation.profile;
+  if (profile?.emailVerified !== true || !profile.googleSubject) return {};
+  const sameAccount =
+    previous?.metadata.providerAccountVerified !== true ||
+    !previous?.profile.accountId ||
+    !profile.accountId ||
+    previous.profile.accountId.toLowerCase() === profile.accountId.toLowerCase();
+  if (!sameAccount) return {};
+  return {
+    googleSubject: profile.googleSubject,
+    hostedDomain: profile.hostedDomain,
+    emailVerified: true,
+  };
 }
 
 function describeError(error: unknown): string {

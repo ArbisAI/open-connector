@@ -1,5 +1,6 @@
 import type { ExecutionContext } from "../../core/types.ts";
 
+import { Buffer } from "node:buffer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { serializeRuntimeActionResult } from "../../server/api/runtime-api.ts";
 import { executors, gmailActionHandlers, proxy } from "./executors.ts";
@@ -142,6 +143,80 @@ describe("Gmail list actions", () => {
     ).rejects.toMatchObject({
       status: 502,
       message: "gmail filters list response must be valid JSON",
+    });
+  });
+});
+
+describe("Gmail get_message", () => {
+  it("returns body text and both separately stored and inline attachment metadata", async () => {
+    const result = await gmailActionHandlers.get_message(
+      { messageId: "message-1" },
+      actionContext(async (input) => {
+        const url = new URL(String(input));
+        expect(url.pathname).toBe("/gmail/v1/users/me/messages/message-1");
+        expect(url.searchParams.get("format")).toBe("full");
+        return Response.json({
+          id: "message-1",
+          threadId: "thread-1",
+          payload: {
+            mimeType: "multipart/mixed",
+            headers: [
+              { name: "Subject", value: "Quarterly report" },
+              { name: "From", value: "alice@example.com" },
+              { name: "To", value: "bob@example.com" },
+              { name: "Date", value: "Mon, 1 Jan 2024 00:00:00 +0000" },
+            ],
+            parts: [
+              {
+                mimeType: "text/plain",
+                body: { data: Buffer.from("Please review the report.").toString("base64url") },
+              },
+              {
+                partId: "1",
+                filename: "report.pdf",
+                mimeType: "application/pdf",
+                headers: [{ name: "Content-Disposition", value: "attachment" }],
+                body: { attachmentId: "pdf-bytes", size: 100 },
+              },
+              {
+                partId: "2",
+                mimeType: "image/jpeg",
+                headers: [{ name: "Content-Disposition", value: "inline" }],
+                body: { data: "AA", size: 1 },
+              },
+            ],
+          },
+        });
+      }),
+    );
+
+    expect(result).toMatchObject({
+      messageId: "message-1",
+      threadId: "thread-1",
+      subject: "Quarterly report",
+      from: "alice@example.com",
+      to: "bob@example.com",
+      body: "Please review the report.",
+      attachmentList: [
+        {
+          attachmentId: "pdf-bytes",
+          filename: "report.pdf",
+          mimeType: "application/pdf",
+          size: 100,
+          partId: "1",
+          contentId: null,
+          disposition: "attachment",
+        },
+        {
+          attachmentId: null,
+          filename: "",
+          mimeType: "image/jpeg",
+          size: 1,
+          partId: "2",
+          contentId: null,
+          disposition: "inline",
+        },
+      ],
     });
   });
 });

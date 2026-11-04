@@ -23,6 +23,7 @@ import { SaasProjectService } from "../saas/saas-project-service.ts";
 import { TriggerMaintenance } from "../triggers/maintenance.ts";
 import { TriggerRunner } from "../triggers/trigger-runner.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
+import { assertCompanyAuthorizationConfigured } from "./actions/company-authorization.ts";
 import { ConnectServer } from "./connect-server.ts";
 import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
 
@@ -87,6 +88,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     store: options.runtimeDatabase.oauthClientConfigStore,
     isCustomClientConfigAvailable: (service) => options.secretCodec.encrypted && isCustomClientConfigAllowed(service),
   });
+  assertCompanyAuthorizationConfigured();
   const connections = new ConnectionService({
     providerHttpDispatch: options.providerHttpDispatch,
     catalog: options.catalog,

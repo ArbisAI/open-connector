@@ -25,13 +25,22 @@ export const consoleOAuthConnectionInput: z.ZodType<{
 
 export const apiKeyConnectionInput: z.ZodType<{
   apiKey: string;
+  connectionName?: string;
   extra?: Record<string, string>;
   comment?: string | null;
 }> = z
   .object({
-    apiKey: z.string(),
-    extra: z.record(z.string(), z.string()).optional(),
-    comment: z.string().nullable().optional(),
+    apiKey: z
+      .string()
+      .min(1)
+      .max(16384)
+      .refine((value) => value.trim().length > 0, "API key is required."),
+    connectionName: z
+      .string()
+      .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)
+      .optional(),
+    extra: z.record(z.string().max(128), z.string().max(16384)).optional(),
+    comment: z.string().max(512).nullable().optional(),
   })
   .strict();
 

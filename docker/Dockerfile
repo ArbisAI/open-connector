@@ -27,7 +27,6 @@ COPY --from=build /app/dist ./dist
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/open-connector
 
 RUN npm ci --omit=dev --ignore-scripts
-VOLUME ["/app/data"]
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD ["node", "scripts/healthcheck.ts"]

@@ -375,6 +375,40 @@ export function createOpenApiDocument(
     "/api/files": createTransitFilesPath(),
     "/api/files/{fileId}": createTransitFilePath(),
     "/v1/actions/{actionId}": runPath,
+    "/v1/actions/{actionId}/prepare": {
+      post: {
+        tags: ["Runs"],
+        summary: "Prepare an action for human review without dispatching its write.",
+        description:
+          "Uses the same action and connection policy as execution. Supported local Gmail, Calendar, Drive and Notion actions capture their effective HTTP request and preceding reads, up to 1 MiB in total. Other actions return their saved input for generic review. Keep the returned prepared plan on the server; present only preview to the user. Execute with the same input, connection, prepared plan and a stable Idempotency-Key. Preparation may read provider resources and refresh credentials.",
+        parameters: [actionIdParameter, ...namedConnectionParameters],
+        requestBody: actionRunBody(
+          jsonSchema.unknownObject("Input matching the action catalog schema."),
+          "Action preparation request.",
+        ),
+        responses: {
+          200: jsonResponse(
+            runtimeSuccessSchema(
+              jsonSchema.object(
+                {
+                  prepared: jsonSchema.unknownObject(
+                    "Server-owned request and read snapshot; contains private action data, no credential headers.",
+                  ),
+                  preview: jsonSchema.unknownObject("Complete user review with account, target, content and effect."),
+                },
+                { required: ["prepared", "preview"] },
+              ),
+            ),
+          ),
+          400: jsonResponse(runtimeFailureSchema()),
+          401: jsonResponse(runtimeFailureSchema()),
+          403: jsonResponse(runtimeFailureSchema()),
+          404: jsonResponse(runtimeFailureSchema()),
+          409: jsonResponse(runtimeFailureSchema()),
+          502: jsonResponse(runtimeFailureSchema()),
+        },
+      },
+    },
     "/v1/proxy/{service}": createProxyPath(),
     "/v1/providers/{service}/trigger-permissions": runtimeGetOperation(
       "Triggers",
@@ -1606,6 +1640,9 @@ function actionRunBody(input: JsonSchema, description: string): Record<string, u
         schema: jsonSchema.object(
           {
             input,
+            prepared: jsonSchema.unknownObject(
+              "Optional server-owned plan returned by the prepare endpoint. Must match the action, connection and input.",
+            ),
             ...namedConnectionProperties,
           },
           { description },
@@ -1770,6 +1807,17 @@ function connectionManagementPaths(): Record<string, unknown> {
   });
   const setup = jsonSchema.object("Setup requirements and OAuth client state for one provider, without saved values.", {
     service: jsonSchema.string(),
+    authMethods: jsonSchema.array(
+      jsonSchema.object(
+        "Application-facing choices. OAuth configured describes the installed provider app, not a user's connection.",
+        {
+          type: jsonSchema.stringEnum("Sign-in method.", ["oauth", "api_key", "custom_credentials", "no_auth"]),
+          configured: jsonSchema.boolean(),
+          unavailableReason: jsonSchema.nullableString("Why this method is not ready."),
+          fields: jsonSchema.array(field),
+        },
+      ),
+    ),
     auth: jsonSchema.array(
       jsonSchema.object("One supported credential type with its form metadata.", {
         type: jsonSchema.stringEnum("Credential type.", ["no_auth", "api_key", "custom_credential", "oauth2"]),
@@ -1837,11 +1885,33 @@ function connectionManagementPaths(): Record<string, unknown> {
       data: jsonSchema.array(app),
       errorStatuses: [401, 403],
     }),
-    "/v1/connections/by-id/{appId}": runtimeGetOperation("Connections", "Get the current connection state.", {
-      data: app,
-      parameters: [parameter("appId")],
-      errorStatuses: [401, 403, 404],
-    }),
+    "/v1/connections/by-alias/{service}/{alias}": runtimeGetOperation(
+      "Connections",
+      "Find one manageable connection by provider and exact alias.",
+      {
+        data: app,
+        parameters: [parameter("service"), parameter("alias")],
+        errorStatuses: [401, 403, 404],
+      },
+    ),
+    "/v1/connections/by-id/{appId}": {
+      ...runtimeGetOperation("Connections", "Get the current connection state.", {
+        data: app,
+        parameters: [parameter("appId")],
+        errorStatuses: [401, 403, 404],
+      }),
+      delete: {
+        tags: ["Connections"],
+        summary: "Disconnect the exact stored connection without selecting a provider default.",
+        parameters: [parameter("appId")],
+        responses: {
+          200: jsonResponse(runtimeSuccessSchema({ type: "null" })),
+          401: jsonResponse(runtimeFailureSchema()),
+          403: jsonResponse(runtimeFailureSchema()),
+          404: jsonResponse(runtimeFailureSchema()),
+        },
+      },
+    },
     "/v1/connection-requests/{connectionRequestId}": runtimeGetOperation(
       "Connections",
       "Get an OAuth authorization result.",

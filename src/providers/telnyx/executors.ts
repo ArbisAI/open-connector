@@ -1,4 +1,6 @@
 import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { IntegrationDefinition } from "../../triggers/common/integration.ts";
+import type { PollDefinition } from "../../triggers/common/poll.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
@@ -10,6 +12,7 @@ import {
   ProviderRequestError,
   requiredInputString,
 } from "../provider-runtime.ts";
+import { telnyxMessageReceived } from "./trigger-on-message-received.ts";
 
 const service = "telnyx";
 const telnyxApiBaseUrl = "https://api.telnyx.com/v2";
@@ -47,6 +50,8 @@ export const telnyxActionHandlers: ProviderActionHandlers<"telnyx", TelnyxAction
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, telnyxActionHandlers);
+
+export const triggers: readonly (IntegrationDefinition | PollDefinition)[] = [telnyxMessageReceived];
 
 export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
