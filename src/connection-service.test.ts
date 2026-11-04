@@ -595,6 +595,41 @@ describe("ConnectionService", () => {
     await expect(service.listConnections()).resolves.toEqual([]);
   });
 
+  it.each([
+    { verifiedBefore: false, verifiedNow: true, subject: "google-subject", accepted: true },
+    { verifiedBefore: true, verifiedNow: true, subject: "google-subject", accepted: false },
+    { verifiedBefore: false, verifiedNow: false, subject: "google-subject", accepted: false },
+    { verifiedBefore: false, verifiedNow: true, subject: undefined, accepted: false },
+  ])(
+    "requires new Google proof without treating an OAuth placeholder as an account (%#)",
+    async ({ verifiedBefore, verifiedNow, subject, accepted }) => {
+      const service = createService([oauthProvider], {
+        providerLoader: new FakeProviderLoader({
+          async oauth2() {
+            return {
+              profile: {
+                ...testProfile,
+                accountId: "person@acme.test",
+                googleSubject: subject,
+                hostedDomain: "acme.test",
+                emailVerified: verifiedNow,
+              },
+            };
+          },
+        }),
+      });
+      const summary = await service.setOAuthCredential("example", {
+        authType: "oauth2",
+        accessToken: "test-token",
+        tokenType: "Bearer",
+        profile: { ...testProfile, accountId: "example:oauth2" },
+        metadata: { providerAccountVerified: verifiedBefore },
+      });
+      expect(summary.profile.googleSubject).toBe(accepted ? "google-subject" : undefined);
+      expect(summary.profile.emailVerified).toBe(accepted ? true : undefined);
+    },
+  );
+
   // Credential metadata also holds client secrets and provider-private data.
   // The summary is a public shape, so this asserts the WHOLE object rather
   // than the one new key: a test that only checks `oauthAuthorizationId` is
@@ -784,6 +819,84 @@ describe("ConnectionService", () => {
         method: "POST",
       }),
     );
+  });
+
+  it.each([true, false])("only persists permanent renewal rejection (permanent=%s)", async (permanent) => {
+    const store = new MemoryConnectionStore();
+    const configs = createOAuthClientConfigs([oauthProvider]);
+    await configs.upsertConfig({ service: "example", clientId: "client-id", clientSecret: "client-secret" });
+    const service = createService([oauthProvider], {
+      store,
+      oauthCredentials: new OAuthCredentialRefreshService(configs),
+    });
+    const saved = await store.set("example", "default", {
+      authType: "oauth2",
+      accessToken: "expired",
+      tokenType: "Bearer",
+      refreshToken: "refresh",
+      expiresAt: "2026-01-01T00:00:00Z",
+      profile: testProfile,
+      metadata: {},
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          { error: permanent ? "invalid_grant" : "temporarily_unavailable" },
+          { status: permanent ? 400 : 503 },
+        ),
+      ),
+    );
+    const code = permanent ? "oauth_reauth_required" : "oauth_token_refresh_failed";
+    await expect(service.getCredential("example")).rejects.toMatchObject({ code });
+    expect((await service.getManagedConnection(saved.id)).status).toBe(permanent ? "reauth_required" : "active");
+    await expect(service.getCredential("example")).rejects.toMatchObject({ code });
+    expect(fetch).toHaveBeenCalledTimes(permanent ? 1 : 2);
+  });
+
+  it("does not mark a replacement credential invalid when an older refresh fails", async () => {
+    const store = new MemoryConnectionStore();
+    const configs = createOAuthClientConfigs([oauthProvider]);
+    await configs.upsertConfig({ service: "example", clientId: "client-id", clientSecret: "client-secret" });
+    const service = createService([oauthProvider], {
+      store,
+      oauthCredentials: new OAuthCredentialRefreshService(configs),
+    });
+    const expired = {
+      authType: "oauth2" as const,
+      accessToken: "expired",
+      tokenType: "Bearer",
+      refreshToken: "refresh",
+      expiresAt: "2026-01-01T00:00:00Z",
+      profile: testProfile,
+      metadata: {},
+    };
+    await store.set("example", "default", expired);
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let complete!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        started();
+        return new Promise<Response>((resolve) => {
+          complete = resolve;
+        });
+      }),
+    );
+    const execution = service.getCredential("example");
+    await pending;
+    const replacement = await store.set("example", "default", {
+      ...expired,
+      accessToken: "replacement",
+      expiresAt: "2099-01-01T00:00:00Z",
+    });
+    complete(Response.json({ error: "invalid_grant" }, { status: 400 }));
+    await expect(execution).rejects.toMatchObject({ code: "connection_changed" });
+    expect((await service.getManagedConnection(replacement.id)).status).toBe("active");
+    await expect(service.getCredential("example")).resolves.toMatchObject({ accessToken: "replacement" });
   });
 
   it("shares an in-flight OAuth refresh across concurrent requests", async () => {
@@ -1295,6 +1408,31 @@ describe("ConnectionService disconnect revocation", () => {
     }
     return body;
   }
+
+  it("cleans both company connections sharing a Google grant without a user retry", async () => {
+    const provider: ProviderDefinition = {
+      ...revocableProvider,
+      auth: [
+        {
+          ...revocableProvider.auth[0],
+          revocationUrl: "https://oauth2.googleapis.com/revoke",
+        } as ProviderDefinition["auth"][number],
+      ],
+    };
+    const { service, store } = await connectRevocable(provider);
+    const first = await store.get(provider.service, "default");
+    if (!first || first.source === "saas") throw new Error("Expected local OAuth connection");
+    const second = await store.set(provider.service, "calendar", first.credential);
+    let calls = 0;
+    stubRevocationResponse(() =>
+      ++calls === 1 ? new Response(null, { status: 200 }) : Response.json({ error: "invalid_token" }, { status: 400 }),
+    );
+    await expect(service.disconnectForCompany(first.id, true)).resolves.toBeUndefined();
+    await expect(service.disconnectForCompany(second.id, true)).resolves.toBeUndefined();
+    expect(calls).toBe(2);
+    expect(await store.get(provider.service, "default")).toBeUndefined();
+    expect(await store.get(provider.service, "calendar")).toBeUndefined();
+  });
 
   it("deletes the connection before posting the refresh token once", async () => {
     const { service, store, logger } = await connectRevocable(revocableProvider);

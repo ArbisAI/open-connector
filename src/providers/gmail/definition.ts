@@ -22,7 +22,7 @@ export const provider: ProviderDefinition = {
       tokenUrl: "https://oauth2.googleapis.com/token",
       revocationUrl: "https://oauth2.googleapis.com/revoke",
       scopes: gmailAuthorizableScopes,
-      authorizationOptions: gmailAuthorizableScopes.map((id) => ({
+      authorizationOptions: [...gmailAuthorizableScopes, ...gmailOptionalScopes].map((id) => ({
         id,
         label: id.split("/").pop() ?? id,
         description: "Optional Google permission. Reading does not require write access.",

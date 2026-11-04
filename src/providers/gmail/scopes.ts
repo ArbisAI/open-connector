@@ -1,3 +1,5 @@
+import { googleIdentityScopes } from "../googleads/scopes.ts";
+
 export const gmailReadonlyScope = "https://www.googleapis.com/auth/gmail.readonly";
 export const gmailModifyScope = "https://www.googleapis.com/auth/gmail.modify";
 export const gmailComposeScope = "https://www.googleapis.com/auth/gmail.compose";
@@ -51,6 +53,8 @@ export const gmailAuthorizableScopes: string[] = [
   gmailModifyScope,
   gmailLabelsScope,
   gmailSettingsBasicScope,
+  // userinfo needs these. They are not in gmailOAuthScopes, so a service-account mint stays unchanged.
+  ...googleIdentityScopes,
 ];
 
 /** Narrow compose and send grants, available only through requestedScopes. */

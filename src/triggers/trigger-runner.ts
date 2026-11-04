@@ -14,6 +14,7 @@ import { ConnectionError } from "../connection-service.ts";
 import { optionalInteger, optionalRecord } from "../core/cast.ts";
 import { withProviderHttpDispatch } from "../core/provider-http-dispatch.ts";
 import { withProviderHttpDispatchResult } from "../providers/provider-runtime.ts";
+import { authorizeCompanyExecution, companyDispatchOptions } from "../server/actions/company-authorization.ts";
 import { HttpRequestError } from "../server/api/http-utils.ts";
 import { mapConnectionErrorStatus } from "../server/api/runtime-api.ts";
 import { resolveTriggerConfig } from "./common/config.ts";
@@ -46,13 +47,13 @@ export interface RunTriggerInput {
 export class TriggerRunner {
   private readonly options: TriggerRunnerOptions;
   constructor(options: TriggerRunnerOptions) {
-    this.options = options;
+    this.options = { ...options, providerHttpDispatch: companyDispatchOptions(options.providerHttpDispatch) };
   }
 
   async run(input: RunTriggerInput): Promise<unknown> {
     const provider = this.options.catalog.providers.find((candidate) => candidate.service === input.service);
     return withProviderHttpDispatch(
-      { operation: "trigger", service: provider?.service },
+      { operation: "trigger", service: provider?.service, connectionId: input.connectionId },
       () => this.runTrigger(input),
       this.options.providerHttpDispatch,
     );
@@ -80,7 +81,7 @@ export class TriggerRunner {
     if (request.operation === "receive") {
       if (definition.snapshot.type !== "integration" || ("eventSource" in definition && definition.eventSource))
         throw new HttpRequestError("invalid_input", "This Trigger has no remote webhook.");
-      return this.providerOperation(input.service, () =>
+      return this.providerOperation(input.service, target.owner.connectionId, () =>
         executeSubscription(
           this.options.store,
           definition as IntegrationDefinition,
@@ -97,7 +98,7 @@ export class TriggerRunner {
       request.operation === "options",
     );
     const context = { config, connector: target.proxy, now: new Date(), signal: input.signal };
-    return this.providerOperation(input.service, async () => {
+    return this.providerOperation(input.service, target.owner.connectionId, async () => {
       switch (request.operation) {
         case "options": {
           if (
@@ -155,7 +156,7 @@ export class TriggerRunner {
     if (record.mode === "resource") {
       if (!(definition as IntegrationDefinition).resources)
         throw new HttpRequestError("trigger_not_supported", "Resource subscriptions are unavailable.", 501);
-      await this.providerOperation(record.service, () =>
+      await this.providerOperation(record.service, target.owner.connectionId, () =>
         executeResourceSubscriptionOperation(
           this.options.store,
           (definition as IntegrationDefinition).resources!,
@@ -169,7 +170,7 @@ export class TriggerRunner {
     } else {
       if (definition.snapshot.type !== "integration")
         throw new HttpRequestError("trigger_not_found", "The remote Trigger definition is unavailable.", 404);
-      await this.providerOperation(record.service, () =>
+      await this.providerOperation(record.service, target.owner.connectionId, () =>
         executeSubscriptionOperation(
           record,
           save,
@@ -218,6 +219,21 @@ export class TriggerRunner {
       const summary = await this.options.connections.getConnectionSummary(service, connectionName, connectionId);
       const permission = policy?.evaluateConnection(summary?.id);
       if (permission && !permission.allowed) throw new HttpRequestError(permission.code, permission.message, 403);
+      const company = await authorizeCompanyExecution({
+        operation: "trigger",
+        service,
+        connectionId: summary?.id ?? connectionId,
+        signal,
+      });
+      if (!company.ok) {
+        throw new HttpRequestError(
+          company.reason === "unavailable" ? "rate_limited" : "forbidden",
+          company.reason === "unavailable"
+            ? "Company authorization is temporarily unavailable."
+            : "Current company access is required.",
+          company.reason === "unavailable" ? 503 : 403,
+        );
+      }
       const target = await this.options.connections.resolveForExecution(service, connectionName, connectionId);
       if (target.kind !== "local")
         throw new HttpRequestError(
@@ -282,9 +298,9 @@ export class TriggerRunner {
     }
   }
 
-  private async providerOperation<T>(service: string, run: () => Promise<T>): Promise<T> {
+  private async providerOperation<T>(service: string, connectionId: string, run: () => Promise<T>): Promise<T> {
     return withProviderHttpDispatchResult(
-      { operation: "trigger", service },
+      { operation: "trigger", service, connectionId },
       () => this.runProviderOperation(run),
       this.options.providerHttpDispatch,
     );

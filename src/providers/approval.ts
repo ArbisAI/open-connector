@@ -7,6 +7,18 @@ import { readBoundedResponseBytes } from "../core/request.ts";
 const maxSnapshotBytes = 1024 * 1024;
 const savedHeaders = ["content-type", "if-match", "if-none-match", "notion-version"];
 const supportedActions = new Set([
+  "outlook.create_draft",
+  "outlook.update_draft",
+  "outlook.send_draft",
+  "outlook.send_email",
+  "outlook.reply_email",
+  "outlook_calendar.create_event",
+  "outlook_calendar.update_event",
+  "outlook_calendar.delete_event",
+  "outlook_calendar.cancel_event",
+  "outlook_calendar.accept_event",
+  "outlook_calendar.decline_event",
+  "outlook_calendar.tentatively_accept_event",
   "gmail.send_email",
   "gmail.reply_email",
   "gmail.reply_to_thread",
@@ -54,6 +66,7 @@ export interface SavedHttpRead {
 }
 
 export interface PreparedAction {
+  createdAt?: number;
   version: 1;
   actionId: string;
   connectionId: string;
@@ -71,7 +84,8 @@ export function isPreparedAction(value: unknown): value is PreparedAction {
     typeof saved.actionId !== "string" ||
     typeof saved.connectionId !== "string" ||
     !/^[a-f0-9]{64}$/.test(saved.inputHash) ||
-    !Array.isArray(saved.reads)
+    !Array.isArray(saved.reads) ||
+    (saved.createdAt !== undefined && (typeof saved.createdAt !== "number" || !Number.isSafeInteger(saved.createdAt)))
   )
     return false;
   const validBody = (body: unknown): body is string =>
@@ -132,6 +146,18 @@ export class ApprovalPreparationError extends Error {
 
 export function supportsPreparedAction(actionId: string): boolean {
   return supportedActions.has(actionId);
+}
+
+const approvalMaxAgeMs = 600_000;
+
+/** A caller-supplied approval is current only when this server stamped it inside the window. */
+export function isCurrentPreparedApproval(prepared: PreparedAction | undefined, now: number = Date.now()): boolean {
+  return (
+    typeof prepared?.createdAt === "number" &&
+    Number.isSafeInteger(prepared.createdAt) &&
+    prepared.createdAt <= now &&
+    now - prepared.createdAt <= approvalMaxAgeMs
+  );
 }
 
 export function approvalInputHash(input: unknown): string {

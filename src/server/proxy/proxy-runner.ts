@@ -15,6 +15,7 @@ import {
   withProviderHttpDispatchResult,
 } from "../../providers/provider-runtime.ts";
 import { SaasError } from "../../saas/saas-client.ts";
+import { authorizeCompanyExecution, companyDispatchOptions } from "../actions/company-authorization.ts";
 import { mapConnectionErrorStatus } from "../api/runtime-api.ts";
 
 export type ProxyFailureStatus = 400 | 402 | 403 | 404 | 409 | 413 | 429 | 500 | 501 | 502 | 503 | 504;
@@ -65,13 +66,13 @@ export class ProxyRunner {
   private readonly options: ProxyRunnerOptions;
 
   constructor(options: ProxyRunnerOptions) {
-    this.options = options;
+    this.options = { ...options, providerHttpDispatch: companyDispatchOptions(options.providerHttpDispatch) };
   }
 
   async run(input: RunProxyInput): Promise<ProxyRunResult> {
     const provider = this.options.catalog.providers.find((candidate) => candidate.service === input.service);
     return withProviderHttpDispatch(
-      { operation: "proxy", service: provider?.service },
+      { operation: "proxy", service: provider?.service, connectionId: input.connectionId },
       () => this.runProxy(input),
       this.options.providerHttpDispatch,
     );
@@ -126,6 +127,24 @@ export class ProxyRunner {
           status: 403,
           errorCode: connectionDecision.code,
           message: connectionDecision.message,
+          meta: { service: provider.service },
+        };
+      }
+      const company = await authorizeCompanyExecution({
+        operation: "proxy",
+        service: provider.service,
+        connectionId: connection?.id ?? input.connectionId,
+        signal: input.signal,
+      });
+      if (!company.ok) {
+        return {
+          ok: false,
+          status: company.reason === "unavailable" ? 503 : 403,
+          errorCode: company.reason === "unavailable" ? "rate_limited" : "forbidden",
+          message:
+            company.reason === "unavailable"
+              ? "Company authorization is temporarily unavailable."
+              : "Current company access is required.",
           meta: { service: provider.service },
         };
       }

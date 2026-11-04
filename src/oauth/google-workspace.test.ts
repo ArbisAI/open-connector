@@ -11,10 +11,17 @@ function service(scopes = [scope], accountId = "me@acme.test") {
     getStoredConnection: vi.fn().mockResolvedValue({
       id: "root",
       service: "googleworkspace",
-      credential: { authType: "oauth2", profile: { accountId, grantedScopes: scopes } },
+      credential: {
+        authType: "oauth2",
+        profile: { accountId, grantedScopes: scopes, googleSubject: "google-1", emailVerified: true },
+      },
     }),
     getManagedConnectionByAlias: vi.fn().mockRejectedValue(new ConnectionError("connection_not_found", "missing")),
-    setOAuthCredential: vi.fn().mockResolvedValue({ id: "child" }),
+    prepareOAuthCredential: vi.fn(async (_service: string, credential: { profile: { accountId: string } }) => ({
+      ...credential,
+      profile: { ...credential.profile, googleSubject: "google-1", emailVerified: true },
+    })),
+    savePreparedOAuthCredential: vi.fn().mockResolvedValue({ id: "child" }),
     getManagedConnection: vi.fn().mockResolvedValue({ id: "child" }),
   };
 }
@@ -33,6 +40,17 @@ describe("Google combined consent", () => {
       "https://www.googleapis.com/auth/gmail.send",
     );
   });
+  it("offers Gmail draft permission in combined consent", () => {
+    const auth = provider.auth[0];
+    if (auth.type !== "oauth2") throw new Error("oauth");
+    expect(auth.scopes).toContain("https://www.googleapis.com/auth/gmail.compose");
+    expect(auth.authorizationOptions).toContainEqual(
+      expect.objectContaining({
+        id: "https://www.googleapis.com/auth/gmail.compose",
+        label: "Manage drafts and send email",
+      }),
+    );
+  });
   it("materializes only explicitly granted services", async () => {
     const connections = service();
     expect(
@@ -43,7 +61,7 @@ describe("Google combined consent", () => {
         "me@acme.test",
       ),
     ).toBeNull();
-    expect(connections.setOAuthCredential).not.toHaveBeenCalled();
+    expect(connections.savePreparedOAuthCredential).not.toHaveBeenCalled();
     expect(
       await materializeGoogleAccount(connections as unknown as ConnectionService, "root", "gmail", "me@acme.test"),
     ).toEqual({ id: "child" });
@@ -56,7 +74,7 @@ describe("Google combined consent", () => {
     await expect(
       materializeGoogleAccount(connections as unknown as ConnectionService, "root", "googledrive", "me@acme.test"),
     ).rejects.toThrow("Only email");
-    expect(connections.setOAuthCredential).not.toHaveBeenCalled();
+    expect(connections.savePreparedOAuthCredential).not.toHaveBeenCalled();
   });
   it("returns an existing child on retry without overwriting its credential", async () => {
     const connections = service();
@@ -64,7 +82,7 @@ describe("Google combined consent", () => {
     expect(
       await materializeGoogleAccount(connections as unknown as ConnectionService, "root", "gmail", "me@acme.test"),
     ).toEqual({ id: "existing" });
-    expect(connections.setOAuthCredential).not.toHaveBeenCalled();
+    expect(connections.savePreparedOAuthCredential).not.toHaveBeenCalled();
   });
   it("uses returned scopes, never requested scopes, after partial consent", async () => {
     const result = await credentialValidators.oauth2!(
@@ -78,7 +96,9 @@ describe("Google combined consent", () => {
       {
         fetcher: vi
           .fn()
-          .mockResolvedValue(new Response(JSON.stringify({ email: "me@acme.test", email_verified: true }))),
+          .mockResolvedValue(
+            new Response(JSON.stringify({ email: "me@acme.test", email_verified: true, sub: "google-1" })),
+          ),
         signal: undefined,
       },
     );
