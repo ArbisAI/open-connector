@@ -231,6 +231,29 @@ export const whatsappActions: ActionDefinition[] = [
     outputSchema: s.actionOutput({ success: s.boolean("Whether the request completed successfully.") }),
   }),
   defineProviderAction(service, {
+    name: "mark_message_read",
+    operationType: "write",
+    description:
+      "Mark an incoming WhatsApp message as read, optionally displaying the native typing indicator while preparing a reply.",
+    providerPermissions: [messagingPermission],
+    inputSchema: input(
+      {
+        phone_number_id: phoneNumberId,
+        message_id: s.nonEmptyString("The incoming WhatsApp message ID supplied by Meta's message webhook."),
+        typing_indicator: s.boolean({
+          description:
+            "Display the native text typing indicator as well as the read receipt. Only use while preparing a response.",
+          default: false,
+        }),
+      },
+      ["phone_number_id", "message_id"],
+      "Input for acknowledging an incoming WhatsApp message.",
+    ),
+    outputSchema: s.actionOutput({
+      success: s.boolean("Whether Meta accepted the read receipt and optional typing indicator."),
+    }),
+  }),
+  defineProviderAction(service, {
     name: "send_message",
     operationType: "write",
     description: "Send a text message to a WhatsApp user.",
