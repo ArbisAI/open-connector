@@ -4,7 +4,12 @@ import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
 
 import { compactObject, looseArray, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { jsonObject } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent, readTransitFileInput } from "../provider-runtime.ts";
+import {
+  ProviderRequestError,
+  providerResponseError,
+  providerUserAgent,
+  readTransitFileInput,
+} from "../provider-runtime.ts";
 
 export const whatsappGraphApiBaseUrl = "https://graph.facebook.com";
 export const whatsappGraphApiVersion = "v23.0";
@@ -55,6 +60,26 @@ export const whatsappActionHandlers: ProviderActionHandlers<"whatsapp", WhatsApp
   },
   delete_message_template(input, context) {
     return whatsappDeleteMessageTemplate(input, context);
+  },
+  async mark_message_read(input, context) {
+    const body: Record<string, unknown> = {
+      messaging_product: "whatsapp",
+      status: "read",
+      message_id: input.message_id,
+    };
+    if (input.typing_indicator === true) body.typing_indicator = { type: "text" };
+    const payload = await whatsappRequest<{ success?: boolean }>({
+      accessToken: context.accessToken,
+      method: "POST",
+      path: `/${String(input.phone_number_id)}/messages`,
+      body,
+      fetcher: context.fetcher,
+      signal: context.signal,
+      operation: "mark_message_read",
+      phase: "execute",
+    });
+    if (payload.success !== true) throw providerResponseError("WhatsApp did not confirm the read receipt");
+    return { success: true };
   },
   send_message(input, context) {
     return whatsappSendTextMessage(input, context);
