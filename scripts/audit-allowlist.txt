@@ -1,0 +1,7 @@
+# Packages currently high or critical in the production audit.
+# Remove a name after the package is patched. A new name fails the gate.
+fdir
+picomatch
+source-map-js
+tinyglobby
+vite

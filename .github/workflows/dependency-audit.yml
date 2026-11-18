@@ -1,0 +1,33 @@
+name: Dependency audit
+
+# Fail when a high or critical advisory appears that is not already recorded
+# in scripts/audit-allowlist.txt. The allowlist is the CASA justification set.
+# Remove a name after its package is patched so the gate stays tight.
+on:
+  pull_request:
+    branches: [development, uat, main]
+  push:
+    branches: [development, uat, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Reject new high and critical advisories
+        run: |
+          set -euo pipefail
+          npm audit --omit=dev --json > /tmp/audit.json || true
+          python3 scripts/check-audit.py /tmp/audit.json scripts/audit-allowlist.txt
