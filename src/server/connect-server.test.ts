@@ -39,6 +39,8 @@ import { buildActionSearchIndex } from "../core/action-search.ts";
 import { MarketplaceError, MarketplaceService } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthFlowService } from "../oauth/oauth-flow-service.ts";
+import { ProviderLoader } from "../providers/provider-loader.ts";
+import * as providerRuntime from "../providers/provider-runtime.ts";
 import { actionInputMaxDepth, hashActionRequest, hashIdempotencyKey } from "./actions/action-idempotency.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
 import { registerStaticRoutes } from "./api/static-routes.ts";
@@ -4491,3 +4493,50 @@ function createRunLog(id: string, startedAt: string): RunLog {
     ok: true,
   };
 }
+
+it("authenticates the audio route and returns raw bytes without writing a run log", async () => {
+  const runs = new MemoryRunLogStore();
+  const service: ProviderDefinition = { ...apiKeyProvider, service: "whatsapp", displayName: "WhatsApp" };
+  const { downloadWhatsAppAudio } = await import("../providers/whatsapp/audio.ts");
+  const app = createTestServer([service], {
+    runs,
+    auth: { adminToken: "admin", runtimeToken: "runtime" },
+    providerLoader: new ProviderLoader({
+      whatsapp: async () => ({ executors: {}, audioDownloader: downloadWhatsAppAudio }),
+    }),
+  }).createApp();
+  const configured = await app.request("/api/connections/whatsapp", {
+    method: "PUT",
+    headers: { Authorization: "Bearer admin", "Content-Type": "application/json" },
+    body: JSON.stringify({ authType: "api_key", values: { apiKey: "secret" } }),
+  });
+  const connection = (await configured.json()) as { id: string };
+  const body = JSON.stringify({ media_id: "123", phone_number_id: "456" });
+  const missing = await app.request("/v1/media/whatsapp/audio", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  expect(missing.status).toBe(401);
+  const fetcher = vi
+    .spyOn(providerRuntime, "providerFetch")
+    .mockResolvedValueOnce(
+      Response.json({ url: "https://lookaside.fbsbx.com/audio", mime_type: "audio/ogg", file_size: 3 }),
+    )
+    .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])));
+  const response = await app.request("/v1/media/whatsapp/audio", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer runtime",
+      "Content-Type": "application/json",
+      "x-oo-connector-app-id": connection.id,
+    },
+    body,
+  });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("Content-Type")).toBe("audio/ogg");
+  expect(response.headers.get("Cache-Control")).toBe("no-store");
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+  expect((await runs.list({ limit: 10 })).items).toHaveLength(0);
+  fetcher.mockRestore();
+});

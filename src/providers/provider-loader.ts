@@ -11,6 +11,7 @@ export interface ExecutorModule {
   executors: ProviderExecutors;
   oauth?: ProviderOAuthRuntime;
   proxy?: ProviderProxyExecutor;
+  audioDownloader?: ProviderProxyExecutor;
 }
 
 export interface ExecutorModules {
@@ -40,9 +41,10 @@ export interface IProviderLoader {
    */
   loadProxyExecutor(service: string, providerDisplayName?: string): Promise<ProviderProxyExecutor | undefined>;
 
-  /**
-   * Load a provider credential validator only when a connection is created.
-   */
+  /** Load audio download support only from providers included in this runtime. */
+  loadAudioDownloader?(service: string): Promise<ProviderProxyExecutor | undefined>;
+
+  /** Load a provider credential validator only when a connection is created. */
   loadCredentialValidators(service: string): Promise<CredentialValidators | undefined>;
 
   loadTriggerDefinitions?(service: string): Promise<readonly (IntegrationDefinition | PollDefinition)[]>;
@@ -84,6 +86,11 @@ export class ProviderLoader implements IProviderLoader {
 
     const module = await loadExecutors();
     return module.proxy;
+  }
+
+  async loadAudioDownloader(service: string): Promise<ProviderProxyExecutor | undefined> {
+    const load = this.executorModules[service];
+    return load ? (await load()).audioDownloader : undefined;
   }
 
   async loadCredentialValidators(service: string): Promise<CredentialValidators | undefined> {

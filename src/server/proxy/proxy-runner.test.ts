@@ -917,3 +917,44 @@ class TestProviderLoader implements IProviderLoader {
     return undefined;
   }
 }
+
+it("keeps binary handlers behind proxy and connection policy before fetching credentials", async () => {
+  const handler = vi.fn<ProviderProxyExecutor>();
+  const connections = createConnections();
+  const runner = createRunner({ connections, providerLoader: new TestProviderLoader() });
+  const policy = new ActionPolicyService().createSnapshot();
+  vi.spyOn(policy, "evaluateProxy").mockReturnValue({
+    allowed: false,
+    code: "proxy_not_allowed",
+    message: "denied",
+    checks: [],
+  });
+  expect(
+    await runner.run({
+      service: "example",
+      input: { endpoint: "/123", method: "GET" },
+      policy,
+      localExecutor: handler,
+    }),
+  ).toMatchObject({ ok: false, status: 403 });
+  expect(handler).not.toHaveBeenCalled();
+  expect(connections.resolveForExecution).not.toHaveBeenCalled();
+});
+
+it("does not serialize binary handlers or media through a SaaS execution response", async () => {
+  const handler = vi.fn<ProviderProxyExecutor>();
+  const connections = createConnections();
+  vi.mocked(connections.resolveForExecution).mockResolvedValue({ kind: "saas" } as Awaited<
+    ReturnType<ConnectionService["resolveForExecution"]>
+  >);
+  const runner = createRunner({ connections, providerLoader: new TestProviderLoader() });
+  expect(
+    await runner.run({
+      service: "example",
+      input: { endpoint: "/123", method: "GET" },
+      policy: openPolicy,
+      localExecutor: handler,
+    }),
+  ).toMatchObject({ ok: false, status: 501 });
+  expect(handler).not.toHaveBeenCalled();
+});
