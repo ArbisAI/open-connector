@@ -2,7 +2,7 @@ import type { CatalogStore } from "../../catalog-store.ts";
 import type { ConnectionService } from "../../connection-service.ts";
 import type { ActionPolicySnapshot } from "../../core/action-policy.ts";
 import type { ProviderHttpDispatchOptions } from "../../core/provider-http-dispatch.ts";
-import type { RuntimeLogger, ProxyRequestInput, ProxyResponse } from "../../core/types.ts";
+import type { RuntimeLogger, ProxyRequestInput, ProxyResponse, ProviderProxyExecutor } from "../../core/types.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { SaasExecutionService } from "../../saas/saas-execution-service.ts";
 
@@ -30,6 +30,8 @@ export interface ProxyRunnerOptions {
 }
 
 export interface RunProxyInput {
+  /** Server-owned binary handler. Never accepted from the HTTP request body or sent to SaaS. */
+  localExecutor?: ProviderProxyExecutor;
   service: string;
   input: unknown;
   connectionName?: string;
@@ -164,6 +166,15 @@ export class ProxyRunner {
           meta: { service: provider.service },
         };
       this.options.logger?.info(logContext, "proxy request started");
+      if (input.localExecutor && target.kind !== "local") {
+        return {
+          ok: false,
+          status: 501,
+          errorCode: "proxy_not_supported",
+          message: "Binary media requires a locally managed connection.",
+          meta: { service: provider.service },
+        };
+      }
       if (target.kind === "saas") {
         executionId = crypto.randomUUID();
         input.signal?.throwIfAborted();
@@ -201,7 +212,9 @@ export class ProxyRunner {
           message: "Marketplace connections do not support proxy execution.",
           meta: { service: provider.service },
         };
-      const executor = await this.options.providerLoader.loadProxyExecutor(provider.service, provider.displayName);
+      const executor =
+        input.localExecutor ??
+        (await this.options.providerLoader.loadProxyExecutor(provider.service, provider.displayName));
       if (!executor)
         return {
           ok: false,

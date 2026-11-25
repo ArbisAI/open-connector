@@ -75,6 +75,7 @@ import {
   writeRuntimeActionHttpResult,
   writeRuntimeFailure,
   writeRuntimeSuccess,
+  writeRuntimeAudio,
 } from "./api/runtime-api.ts";
 import { renderSaasCompletionPage } from "./api/saas-completion-page.ts";
 import { TransitFileError } from "./files/transit-file-store.ts";
@@ -168,6 +169,7 @@ export class ConnectServer {
   private readonly actionSearch: ActionSearchIndexProvider;
   private readonly actionPolicy: ActionPolicyService;
   private readonly proxyRunner: ProxyRunner;
+  private activeAudioRequests = 0;
   private readonly policySnapshots = new WeakMap<Request, Promise<ActionPolicySnapshot>>();
 
   constructor(options: IConnectServerOptions) {
@@ -270,6 +272,7 @@ export class ConnectServer {
     app.get("/v1/apps/services/:service", (context) =>
       this.listRuntimeAppsByService(context, context.req.param("service")),
     );
+    app.post("/v1/media/whatsapp/audio", (context) => this.downloadRuntimeWhatsAppAudio(context));
     app.post("/v1/proxy/:service", (context) => this.createRuntimeProxyRequest(context, context.req.param("service")));
 
     app.get("/openapi.json", async (context) => {
@@ -1026,6 +1029,59 @@ export class ConnectServer {
       }
 
       throw error;
+    }
+  }
+
+  private async downloadRuntimeWhatsAppAudio(context: Context): Promise<Response> {
+    if (this.activeAudioRequests >= 4)
+      return writeRuntimeFailure(context, {
+        status: 429,
+        errorCode: "rate_limited",
+        message: "Audio downloads are busy. Try again shortly.",
+      });
+    this.activeAudioRequests++;
+    try {
+      const body = await readJsonBody(context);
+      const connectionId = optionalString(context.req.header("x-oo-connector-app-id"));
+      if (!connectionId)
+        return writeRuntimeFailure(context, {
+          status: 400,
+          errorCode: "invalid_input",
+          message: "An explicit WhatsApp connection is required.",
+        });
+      const mediaId = optionalString(body.media_id);
+      const phoneNumberId = optionalString(body.phone_number_id);
+      if (!mediaId || !/^\d{1,128}$/.test(mediaId) || !phoneNumberId || !/^\d{1,128}$/.test(phoneNumberId)) {
+        return writeRuntimeFailure(context, {
+          status: 400,
+          errorCode: "invalid_input",
+          message: "A media ID and receiving phone number ID are required.",
+        });
+      }
+      const { downloadWhatsAppAudio } = await import("../providers/whatsapp/audio.ts");
+      const result = await this.proxyRunner.run({
+        service: "whatsapp",
+        input: { method: "GET", endpoint: `/${mediaId}`, query: { phone_number_id: phoneNumberId } },
+        connectionId,
+        policy: await this.getPolicySnapshot(context),
+        signal: context.req.raw.signal,
+        localExecutor: downloadWhatsAppAudio,
+      });
+      if (!result.ok) return writeRuntimeFailure(context, result);
+      if (!(result.response.data instanceof Uint8Array)) {
+        return writeRuntimeFailure(context, {
+          status: 502,
+          errorCode: "provider_error",
+          message: "Invalid audio response.",
+        });
+      }
+      return writeRuntimeAudio(
+        context,
+        result.response.data,
+        result.response.headers["content-type"] ?? "application/octet-stream",
+      );
+    } finally {
+      this.activeAudioRequests--;
     }
   }
 

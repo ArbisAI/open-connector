@@ -472,3 +472,11 @@ export function serializeRuntimeTriggerPermissions(
     requiredScopes: permission.providerPermissions,
   }));
 }
+
+/** Binary media intentionally bypasses the JSON envelope and never enters action-result storage. */
+export function writeRuntimeAudio(context: Context, data: Uint8Array, mimeType: string): Response {
+  context.header("Content-Type", mimeType);
+  context.header("Cache-Control", "no-store");
+  context.header("X-Content-Type-Options", "nosniff");
+  return context.body(new Uint8Array(data).buffer);
+}
