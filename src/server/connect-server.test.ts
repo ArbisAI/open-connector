@@ -39,6 +39,7 @@ import { buildActionSearchIndex } from "../core/action-search.ts";
 import { MarketplaceError, MarketplaceService } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthFlowService } from "../oauth/oauth-flow-service.ts";
+import { ProviderLoader } from "../providers/provider-loader.ts";
 import * as providerRuntime from "../providers/provider-runtime.ts";
 import { actionInputMaxDepth, hashActionRequest, hashIdempotencyKey } from "./actions/action-idempotency.ts";
 import { ActionRunner } from "./actions/action-runner.ts";
@@ -4496,7 +4497,14 @@ function createRunLog(id: string, startedAt: string): RunLog {
 it("authenticates the audio route and returns raw bytes without writing a run log", async () => {
   const runs = new MemoryRunLogStore();
   const service: ProviderDefinition = { ...apiKeyProvider, service: "whatsapp", displayName: "WhatsApp" };
-  const app = createTestServer([service], { runs, auth: { adminToken: "admin", runtimeToken: "runtime" } }).createApp();
+  const { downloadWhatsAppAudio } = await import("../providers/whatsapp/audio.ts");
+  const app = createTestServer([service], {
+    runs,
+    auth: { adminToken: "admin", runtimeToken: "runtime" },
+    providerLoader: new ProviderLoader({
+      whatsapp: async () => ({ executors: {}, audioDownloader: downloadWhatsAppAudio }),
+    }),
+  }).createApp();
   const configured = await app.request("/api/connections/whatsapp", {
     method: "PUT",
     headers: { Authorization: "Bearer admin", "Content-Type": "application/json" },

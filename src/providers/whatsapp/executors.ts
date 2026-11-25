@@ -8,6 +8,7 @@ import type { WhatsAppActionContext } from "./runtime.ts";
 
 import { optionalString } from "../../core/cast.ts";
 import { defineProviderExecutors, defineProviderProxy, requireApiKeyCredential } from "../provider-runtime.ts";
+import { downloadWhatsAppAudio } from "./audio.ts";
 import {
   validateWhatsAppCredential,
   whatsappActionHandlers,
@@ -44,3 +45,5 @@ export const credentialValidators: CredentialValidators = {
     return validateWhatsAppCredential(input, fetcher, signal);
   },
 };
+
+export const audioDownloader: ProviderProxyExecutor = downloadWhatsAppAudio;

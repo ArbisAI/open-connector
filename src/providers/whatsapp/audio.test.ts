@@ -37,7 +37,7 @@ describe("WhatsApp audio transport", () => {
     });
     expect(String(vi.mocked(providerFetch).mock.calls[0]?.[0])).toContain("/123?phone_number_id=456");
     for (const [, init] of vi.mocked(providerFetch).mock.calls) {
-      expect(init?.redirect).toBe("error");
+      expect(init?.redirect).toBe("manual");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
     }
   });
@@ -85,4 +85,14 @@ it("does not leak signed media URLs through network failure messages", async () 
   expect(result.ok).toBe(false);
   expect(JSON.stringify(result)).not.toContain("SECRET");
   expect(JSON.stringify(result)).not.toContain("https://");
+});
+
+it.each(["metadata", "download"])("rejects a redirect at the %s hop without forwarding credentials", async (hop) => {
+  if (hop === "download") vi.mocked(providerFetch).mockResolvedValueOnce(Response.json(metadata));
+  vi.mocked(providerFetch).mockResolvedValueOnce(
+    new Response(null, { status: 302, headers: { Location: "https://attacker.example" } }),
+  );
+  expect((await downloadWhatsAppAudio(input, context)).ok).toBe(false);
+  expect(providerFetch).toHaveBeenCalledTimes(hop === "download" ? 2 : 1);
+  for (const [, init] of vi.mocked(providerFetch).mock.calls) expect(init?.redirect).toBe("manual");
 });

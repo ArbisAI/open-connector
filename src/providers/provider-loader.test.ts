@@ -30,3 +30,14 @@ describe("ProviderLoader OAuth runtime", () => {
     expect(loadRuntime).toHaveBeenCalledOnce();
   });
 });
+
+it("loads audio only from the selected provider registry", async () => {
+  const audioDownloader = vi.fn();
+  const load = vi.fn(async () => ({ executors: {}, audioDownloader }));
+  const loader = new ProviderLoader({ whatsapp: load });
+  expect(load).not.toHaveBeenCalled();
+  await expect(loader.loadAudioDownloader("github")).resolves.toBeUndefined();
+  expect(load).not.toHaveBeenCalled();
+  await expect(loader.loadAudioDownloader("whatsapp")).resolves.toBe(audioDownloader);
+  expect(load).toHaveBeenCalledOnce();
+});

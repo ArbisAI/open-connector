@@ -32,7 +32,7 @@ export const downloadWhatsAppAudio: ProviderProxyExecutor = async (input, contex
           {
             headers,
             signal,
-            redirect: "error",
+            redirect: "manual",
           },
         );
         if (!metadataResponse.ok) {
@@ -67,7 +67,7 @@ export const downloadWhatsAppAudio: ProviderProxyExecutor = async (input, contex
         ) {
           throw new ProviderRequestError(400, "Invalid WhatsApp media destination.");
         }
-        const response = await providerFetch(url, { headers, signal, redirect: "error" });
+        const response = await providerFetch(url, { headers, signal, redirect: "manual" });
         if (!response.ok) {
           await response.body?.cancel();
           throw new ProviderRequestError(response.status, "WhatsApp audio download failed.");

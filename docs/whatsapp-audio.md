@@ -11,3 +11,5 @@ SaaS-managed and marketplace credentials are not supported by this binary route;
 Tests cover runtime authentication, binary response shape, absence of action logs, policy denial, phone binding, download destination checks, streamed byte limits and incompatible remote transports. Existing server/proxy regression suites are included. Actual Meta audio and the target connection must still be verified in development before enabling the consuming feature.
 
 [Meta documents the phone-number ownership parameter](https://www.postman.com/meta/whatsapp-business-platform/request/ptjyi84/retrieve-media-url).
+
+The downloader is loaded through the selected provider registry, so builds that omit WhatsApp do not bundle its implementation. Redirects use manual handling and reject non-success responses, including 3xx, on both Node and Cloudflare Workers.

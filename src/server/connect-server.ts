@@ -1058,7 +1058,13 @@ export class ConnectServer {
           message: "A media ID and receiving phone number ID are required.",
         });
       }
-      const { downloadWhatsAppAudio } = await import("../providers/whatsapp/audio.ts");
+      const downloadWhatsAppAudio = await this.options.providerLoader.loadAudioDownloader?.("whatsapp");
+      if (!downloadWhatsAppAudio)
+        return writeRuntimeFailure(context, {
+          status: 501,
+          errorCode: "proxy_not_supported",
+          message: "WhatsApp audio downloads are not available in this runtime.",
+        });
       const result = await this.proxyRunner.run({
         service: "whatsapp",
         input: { method: "GET", endpoint: `/${mediaId}`, query: { phone_number_id: phoneNumberId } },
